@@ -40,7 +40,7 @@ from utdf2gmns.func_lib.sumo.gmns2sumo import (generate_sumo_nod_xml,
                                                generate_sumo_loop_detector_add_xml)
 
 # cityflow related functions
-from utdf2gmns.func_lib.cityflow.gmns2cityflow import generate_cityflow_net, generate_cityflow_flow
+from utdf2gmns.func_lib.cityflow.gmns2cityflow import CityflowConverter
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -583,11 +583,12 @@ class UTDF2GMNS:
             raise Exception("Please geocode intersections first: net.geocode_utdf_intersections()")
 
         # construct cityflow network from UTDF data
-        roadnet = generate_cityflow_net(self._utdf_dict, self.network_unit)
+        converter = CityflowConverter(self._utdf_dict, self.network_unit)
+        roadnet = converter.generate_cityflow_net()
 
         # generate flow files
         sim_end_time = sim_start_time + sim_duration
-        flow_file = generate_cityflow_flow(self._utdf_dict, sim_start_time, sim_end_time)
+        flow_file = converter.generate_cityflow_flow(sim_start_time, sim_end_time)
 
         # save network json
         roadnet_filename = os.path.join(cityflow_output_dir, f"{sim_name}_network.json")
