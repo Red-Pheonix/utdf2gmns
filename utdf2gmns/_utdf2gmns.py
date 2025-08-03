@@ -39,6 +39,8 @@ from utdf2gmns.func_lib.sumo.gmns2sumo import (generate_sumo_nod_xml,
                                                generate_sumo_connection_xml,
                                                generate_sumo_loop_detector_add_xml)
 
+# cityflow related functions
+from utdf2gmns.func_lib.cityflow.gmns2cityflow import generate_cityflow_net
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -480,6 +482,8 @@ class UTDF2GMNS:
             print("\n  :Generating SUMO .rou.xml file from UTDF lanes...")
             jtrrouter_fname = Path(__file__).parent / "engine" / "jtrrouter.exe"
             jtrrouter_fname = pf.path2linux(jtrrouter_fname)
+            jtrrouter_fname = "jtrrouter"
+
             result = subprocess.run([jtrrouter_fname,
                                      f"--route-files={output_flow_file}",
                                      f"--net-file={output_net_file}",
@@ -555,4 +559,38 @@ class UTDF2GMNS:
 
         print(f"  :Successfully generated SUMO configuration file to \n    {sumo_output_dir}.")
 
+        return True
+
+
+    def utdf_to_cityflow(self, *,
+                        output_dir: str = "",
+                        sim_name: str = "",
+                        show_warning_message: bool = False,
+                        disable_U_turn: bool = True,
+                        sim_start_time: int = 0,
+                        sim_duration: int = 3600  # 1 hour
+                    ) -> bool:
+
+        print("\nConverting UTDF to Cityflow using GMNS standard...")
+        # check if the output directory exists
+        utdf_dir = Path(self._utdf_filename).parent.absolute()
+        cityflow_output_dir = output_dir or os.path.join(utdf_dir, "utdf_to_sumo")
+        cityflow_output_dir = pf.path2linux(cityflow_output_dir)
+
+        # create the output directory if it does not exist
+        os.makedirs(cityflow_output_dir, exist_ok=True)
+
+        # Crate network nodes if does not exist
+        if not hasattr(self, "network_nodes"):
+            raise Exception("Please geocode intersections first: net.geocode_utdf_intersections()")
+
+
+        roadnet = generate_cityflow_net(self._utdf_dict, self.network_unit)
+
+        # with open("output.json", "w") as f:
+        #     json.dump(roadnet, f, indent=4)
+
+
+        print("Conversion from UTDF to Cityflow completed.")
+        
         return True
