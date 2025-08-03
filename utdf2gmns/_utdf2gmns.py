@@ -40,7 +40,7 @@ from utdf2gmns.func_lib.sumo.gmns2sumo import (generate_sumo_nod_xml,
                                                generate_sumo_loop_detector_add_xml)
 
 # cityflow related functions
-from utdf2gmns.func_lib.cityflow.gmns2cityflow import generate_cityflow_net
+from utdf2gmns.func_lib.cityflow.gmns2cityflow import generate_cityflow_net, generate_cityflow_flow
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -564,9 +564,7 @@ class UTDF2GMNS:
 
     def utdf_to_cityflow(self, *,
                         output_dir: str = "",
-                        sim_name: str = "",
-                        show_warning_message: bool = False,
-                        disable_U_turn: bool = True,
+                        sim_name: str = "utdf_to_cityflow",
                         sim_start_time: int = 0,
                         sim_duration: int = 3600  # 1 hour
                     ) -> bool:
@@ -574,7 +572,7 @@ class UTDF2GMNS:
         print("\nConverting UTDF to Cityflow using GMNS standard...")
         # check if the output directory exists
         utdf_dir = Path(self._utdf_filename).parent.absolute()
-        cityflow_output_dir = output_dir or os.path.join(utdf_dir, "utdf_to_sumo")
+        cityflow_output_dir = output_dir or os.path.join(utdf_dir, "utdf_to_cityflow")
         cityflow_output_dir = pf.path2linux(cityflow_output_dir)
 
         # create the output directory if it does not exist
@@ -584,13 +582,25 @@ class UTDF2GMNS:
         if not hasattr(self, "network_nodes"):
             raise Exception("Please geocode intersections first: net.geocode_utdf_intersections()")
 
-
+        # construct cityflow network from UTDF data
         roadnet = generate_cityflow_net(self._utdf_dict, self.network_unit)
 
-        # with open("output.json", "w") as f:
-        #     json.dump(roadnet, f, indent=4)
+        # generate flow files
+        sim_end_time = sim_start_time + sim_duration
+        flow_file = generate_cityflow_flow(self._utdf_dict, sim_start_time, sim_end_time)
 
+        # save network json
+        roadnet_filename = os.path.join(cityflow_output_dir, f"{sim_name}_network.json")
+        roadnet_filename = pf.path2linux(roadnet_filename)
+        with open(roadnet_filename, "w") as f:
+            json.dump(roadnet, f, indent=4)
+
+        # save flow file
+        flow_filename = os.path.join(cityflow_output_dir, f"{sim_name}_flow.json")
+        flow_filename = pf.path2linux(flow_filename)
+        with open(flow_filename, "w") as f:
+            json.dump(flow_file, f, indent=4)
 
         print("Conversion from UTDF to Cityflow completed.")
-        
+
         return True
