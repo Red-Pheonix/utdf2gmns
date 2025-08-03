@@ -1,6 +1,6 @@
 import re
 
-from utdf2gmns.func_lib.gmns.geocoding_Links import cvt_link_df_to_dict
+from utdf2gmns.func_lib.gmns.geocoding_Links import cvt_link_df_to_dict, cvt_lonlat_to_utm
 from utdf2gmns.func_lib.utdf.cvt_utdf_lane_df_to_dict import cvt_lane_df_to_dict
 
 # borrow functions from SUMO
@@ -101,6 +101,17 @@ def extract_float(number_text: str, default_value: float = 0.0) -> float:
     else:
         return default_value
 
+def extract_coord(node: dict):
+    longitude = node["x_coord"]
+    latitude = node["y_coord"]
+    
+    x,y, _, _ = cvt_lonlat_to_utm(longitude, latitude)
+    coord_point = {
+        "x": x,
+        "y": y
+    }
+
+    return coord_point
 
 def update_lane_index(lane_index: int, edge_id: str, roads_map: dict) -> int:
     """Update lane index based on the roads map."""
@@ -151,10 +162,7 @@ def generate_roads(network_nodes: dict, network_links: dict, network_unit: str):
 
             road = {}
             road["id"] = f"{from_node_id}_{to_node_id}"
-            road["points"] = [
-                {"x": from_node["x_coord"], "y": from_node["y_coord"]},
-                {"x": to_node["x_coord"], "y": to_node["y_coord"]},
-            ]
+            road["points"] = [ extract_coord(from_node), extract_coord(to_node)]
 
             # add lanes to the road
             lanes = []
@@ -382,7 +390,7 @@ def generate_traffic_phases(phase_infos: dict):
     else:
         # there are no traffic lights in this intersection
         road_link_indices = []
-        lightphases = []
+        lightphases = [{"time": 30, "availableRoadLinks": []}]
 
     return road_link_indices, lightphases
 
@@ -393,7 +401,7 @@ def generate_intersections(network_nodes, roads, node_to_road_links_map, traffic
     for node_id, node in network_nodes.items():
         intersection = {}
         intersection["id"] = node_id
-        intersection["point"] = {"x": node["x_coord"], "y": node["y_coord"]}
+        intersection["point"] = extract_coord(node)
 
         # check if node is virtual meaning it is not signalized
         is_virtual = node["TYPE_DESC"] != "Signalized"
@@ -512,15 +520,16 @@ def generate_cityflow_flow(utdf_dict: dict, start_time: int, end_time: int):
             flow_item = {}
             # TODO: set vehicle details from UTDF data
             # use SUMO defaults for now
+            # following: https://sumo.dlr.de/docs/Specification/
             flow_item["vehicle"] = {
                 "length": 5.0,
-                "width": 1.8,
+                "width": 2.0,
                 "maxPosAcc": 2.6,
                 "maxNegAcc": 4.5,
                 "usualPosAcc": 2.6,
                 "usualNegAcc": 4.5,
                 "minGap": 2.5,
-                "maxSpeed": 13.39,
+                "maxSpeed": 70,
                 "headwayTime": 1.5,
             }
 
