@@ -20,10 +20,26 @@ MOVEMENT_ORDER = [
     "NBL",
     "NBT",
     "NBR",
+
+    "NEL",
+    "NET",
+    "NER",
+
+    "NWL",
+    "NWT",
+    "NWR",
     # south bound
     "SBL",
     "SBT",
     "SBR",
+    
+    "SEL",
+    "SET",
+    "SER",
+
+    "SWL",
+    "SWT",
+    "SWR",
     # east bound
     "EBL",
     "EBT",
@@ -275,7 +291,7 @@ class CityflowConverter:
             from_lane_index = 0
 
             # for keeping track of movements
-            previous_movement = MOVEMENT_ORDER[0][0]
+            previous_movement = MOVEMENT_ORDER[0][0:2]
 
             for movement in MOVEMENT_ORDER:
 
@@ -283,9 +299,9 @@ class CityflowConverter:
 
                 # then the movement direction changed
                 # so start from the first lane again
-                if movement[0] != previous_movement[0]:
+                if movement[0:2] != previous_movement[0:2]:
                     from_lane_index = 0
-                previous_movement = movement[0]
+                previous_movement = movement[0:2]
 
                 # skip if no data
                 if movement_data is None:
@@ -381,7 +397,7 @@ class CityflowConverter:
                 int_id=traffic_light_node,
             )
             tl_movement_map = node_to_road_links_map[traffic_light_node]["movementToRoadLinks"]
-
+            
             # extract phases from ring barrier info
             # TODO: only supports two phases per barrier for now
             # add more robust code later
@@ -406,6 +422,8 @@ class CityflowConverter:
                     protected_movements = set(signal_plan[movement].get("protected", ()))
                     permitted_movements = set(signal_plan[movement].get("permitted", ()))
                     all_movements = all_movements.union(protected_movements, permitted_movements)
+                    # ignore u turns for now
+                    all_movements = {movement for movement in all_movements if movement in MOVEMENT_ORDER}
 
                     # add green and yellow times
                     # TODO: figure out a way to match the SUMO converter implementation
@@ -485,7 +503,8 @@ class CityflowConverter:
 
         # prepare traffic lights
         traffic_phase_infos = self.generate_traffic_light_infos(node_to_road_links_map)
-
+        print(f"Found {len(traffic_phase_infos)} traffic lights in the network.")
+        
         # prepare intersections
         intersections = self.generate_intersections(
             roads, node_to_road_links_map, traffic_phase_infos
@@ -495,6 +514,8 @@ class CityflowConverter:
             "intersections": intersections,
             "roads": roads,
         }
+        
+        print("Completed generating Cityflow network.")
 
         return roadnet
 
@@ -535,7 +556,7 @@ class CityflowConverter:
                 # following: https://sumo.dlr.de/docs/Specification/
                 flow_item["vehicle"] = {
                     "length": 5.0,
-                    "width": 2.0,
+                    "width": 1.8,
                     "maxPosAcc": 2.6,
                     "maxNegAcc": 4.5,
                     "usualPosAcc": 2.6,
@@ -558,4 +579,6 @@ class CityflowConverter:
 
                 flow_items.append(flow_item)
 
+        print("Completed generating Cityflow flow file.")
+        
         return flow_items

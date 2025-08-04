@@ -595,12 +595,14 @@ class UTDF2GMNS:
         roadnet_filename = pf.path2linux(roadnet_filename)
         with open(roadnet_filename, "w") as f:
             json.dump(roadnet, f, indent=4)
-
+        print(f"  :Successfully generated Cityflow network file to \n    {roadnet_filename}.")
+        
         # save flow file
         flow_filename = os.path.join(cityflow_output_dir, f"{sim_name}_flow.json")
         flow_filename = pf.path2linux(flow_filename)
         with open(flow_filename, "w") as f:
             json.dump(flow_file, f, indent=4)
+        print(f"  :Successfully generated Cityflow flow file to \n    {flow_filename}.")
 
         print("Conversion from UTDF to Cityflow completed.")
 
