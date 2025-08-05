@@ -6,6 +6,22 @@ from utdf2gmns.func_lib.utdf.cvt_utdf_lane_df_to_dict import cvt_lane_df_to_dict
 # borrow functions from SUMO
 from utdf2gmns.func_lib.sumo.signal_intersections import parse_signal_control
 
+# default traffic light timings
+DEFAULT_GREEN_TIME = 30
+DEFAULT_YELLOW_TIME = 5
+
+# default traffic light phases
+DEFAULT_PHASES = [
+    # north and south through traffic
+    ["N*R", "N*T", "S*R", "S*T"],
+    # east and west through traffic
+    ["E*R", "E*T", "W*R", "W*T"],
+    # north and south left turns
+    ["N*U", "N*L", "S*U", "S*L"],
+    # east and west left turns
+    ["E*U", "E*L", "W*U", "W*L"],
+]
+
 # only supports right hand traffic for now
 MOVEMENT_MAP = {
     "L": "turn_left",
@@ -22,13 +38,11 @@ MOVEMENT_ORDER = [
     "NBL",
     "NBT",
     "NBR",
-
     "NEU",
     "NEL",
     "NET",
     "NER",
-
-    "NWU"
+    "NWU",
     "NWL",
     "NWT",
     "NWR",
@@ -37,12 +51,10 @@ MOVEMENT_ORDER = [
     "SBL",
     "SBT",
     "SBR",
-    
     "SEU",
     "SEL",
     "SET",
     "SER",
-
     "SWU",
     "SWL",
     "SWT",
@@ -211,6 +223,7 @@ class CityflowConverter:
         self.network_nodes = None
         self.network_links = None
         self.network_lanes = None
+        self.all_traffic_light_nodes = None
 
         if utdf_dict:
             self.setup_utdf_data(utdf_dict)
@@ -239,6 +252,13 @@ class CityflowConverter:
         if lanes_df is None:
             raise ValueError("Could not get Lane data from utdf_dict.")
         self.network_lanes = cvt_lane_df_to_dict(lanes_df)
+
+        # setup traffic light nodes data
+        all_traffic_light_nodes = []
+        for node_id, node in self.network_nodes.items():
+            if node["TYPE_DESC"] == "Signalized":
+                all_traffic_light_nodes.append(node_id)
+        self.all_traffic_light_nodes = all_traffic_light_nodes
 
         self.utdf_dict = utdf_dict
 
@@ -416,9 +436,13 @@ class CityflowConverter:
         return node_to_road_links_map
 
     def generate_traffic_light_infos(self, node_to_road_links_map):
-        traffic_light_nodes = list(set(self.utdf_dict.get("Timeplans")["INTID"].tolist()))
+        tl_nodes_with_timeplans = list(set(self.utdf_dict.get("Timeplans")["INTID"].tolist()))
+        tl_nodes_without_timeplans = list(
+            set(self.all_traffic_light_nodes) - set(tl_nodes_with_timeplans)
+        )
         traffic_light_infos = {}
-        for traffic_light_node in traffic_light_nodes:
+        # first cover traffic lights with timeplans from UTDF
+        for traffic_light_node in tl_nodes_with_timeplans:
 
             signal_plan = parse_signal_control(
                 df_phase=self.utdf_dict.get("Phases"),
@@ -426,7 +450,7 @@ class CityflowConverter:
                 int_id=traffic_light_node,
             )
             tl_movement_map = node_to_road_links_map[traffic_light_node]["movementToRoadLinks"]
-            
+
             # extract phases from ring barrier info
             # TODO: only supports two phases per barrier for now
             # add more robust code later
@@ -452,7 +476,9 @@ class CityflowConverter:
                     permitted_movements = set(signal_plan[movement].get("permitted", ()))
                     all_movements = all_movements.union(protected_movements, permitted_movements)
                     # ignore movements not designed for in this converter for now
-                    all_movements = {movement for movement in all_movements if movement in MOVEMENT_ORDER}
+                    all_movements = {
+                        movement for movement in all_movements if movement in MOVEMENT_ORDER
+                    }
 
                     # add green and yellow times
                     # TODO: figure out a way to match the SUMO converter implementation
@@ -475,6 +501,41 @@ class CityflowConverter:
 
                 traffic_light_infos[traffic_light_node].append(phase_info)
 
+        # for the rest, fill with default timeplans
+        for traffic_light_node in tl_nodes_without_timeplans:
+            # setup traffic node
+            traffic_light_infos[traffic_light_node] = []
+            node = node_to_road_links_map[traffic_light_node]
+            tl_movement_map = node["movementToRoadLinks"]
+            valid_movements = list(tl_movement_map.keys())
+
+            # construct green time phases according to defaults
+            for phase in DEFAULT_PHASES:
+                green_phase_movements = []
+                # add movements for each phase
+                for movement_base in phase:
+                    # check with base movement type
+                    # for example, N*R should check with all north right movements
+                    allowed_movements = [
+                        valid
+                        for valid in valid_movements
+                        if valid[0] == movement_base[0] and valid[2] == movement_base[2]
+                    ]
+
+                    allowed_movements = [
+                        tl_movement_map[movement] for movement in allowed_movements
+                    ]
+
+                    green_phase_movements.extend(allowed_movements)
+
+                phase_info = {
+                    "green_phase_movements": green_phase_movements,
+                    "green_time": DEFAULT_GREEN_TIME,
+                    "yellow_time": DEFAULT_YELLOW_TIME,
+                }
+
+                traffic_light_infos[traffic_light_node].append(phase_info)
+
         return traffic_light_infos
 
     def generate_intersections(self, roads, node_to_road_links_map, traffic_phase_infos):
@@ -485,8 +546,7 @@ class CityflowConverter:
             intersection["point"] = extract_coord(node)
 
             # check if node is virtual meaning it is not signalized
-            # is_virtual = node["TYPE_DESC"] != "Signalized"
-            is_virtual = node_id not in traffic_phase_infos.keys()
+            is_virtual = node["TYPE_DESC"] != "Signalized"
             intersection["width"] = 0 if is_virtual else 15
 
             # add roads to the intersection
@@ -534,7 +594,7 @@ class CityflowConverter:
         # prepare traffic lights
         traffic_phase_infos = self.generate_traffic_light_infos(node_to_road_links_map)
         print(f"Found {len(traffic_phase_infos)} traffic lights in the network.")
-        
+
         # prepare intersections
         intersections = self.generate_intersections(
             roads, node_to_road_links_map, traffic_phase_infos
@@ -544,7 +604,7 @@ class CityflowConverter:
             "intersections": intersections,
             "roads": roads,
         }
-        
+
         print("Completed generating Cityflow network.")
 
         return roadnet
@@ -610,5 +670,5 @@ class CityflowConverter:
                 flow_items.append(flow_item)
 
         print("Completed generating Cityflow flow file.")
-        
+
         return flow_items
