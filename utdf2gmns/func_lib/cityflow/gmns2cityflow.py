@@ -11,40 +11,49 @@ MOVEMENT_MAP = {
     "L": "turn_left",
     "R": "turn_right",
     "T": "go_straight",
-    "U": "turn_right",
+    "U": "turn_u",
 }
 
-# also no u turns
+# TODO: make it robustly handle movements
+# it doesnt cover movements like SER2, NWL2 and such
 MOVEMENT_ORDER = [
     # north bound
+    "NBU",
     "NBL",
     "NBT",
     "NBR",
 
+    "NEU",
     "NEL",
     "NET",
     "NER",
 
+    "NWU"
     "NWL",
     "NWT",
     "NWR",
     # south bound
+    "SBU",
     "SBL",
     "SBT",
     "SBR",
     
+    "SEU",
     "SEL",
     "SET",
     "SER",
 
+    "SWU",
     "SWL",
     "SWT",
     "SWR",
     # east bound
+    "EBU",
     "EBL",
     "EBT",
     "EBR",
     # west bound
+    "WBU",
     "WBL",
     "WBT",
     "WBR",
@@ -191,7 +200,7 @@ def generate_traffic_phases(phase_infos: dict):
     else:
         # there are no traffic lights in this intersection
         road_link_indices = []
-        lightphases = [{"time": 30, "availableRoadLinks": []}]
+        lightphases = [{"time": 5, "availableRoadLinks": []}]
 
     return road_link_indices, lightphases
 
@@ -255,6 +264,8 @@ class CityflowConverter:
                 # add lanes to the road
                 lanes = []
                 num_lanes = extract_int(link.get("Lanes"))
+                # add an extra lane if num lanes is zero
+                num_lanes = max(num_lanes, 1)
                 for _ in range(num_lanes):
                     lane = {}
 
@@ -329,6 +340,24 @@ class CityflowConverter:
                 # treat each movement type as different cases
                 # for shared cases we dont update the from_lane_index
                 # that's how the "sharing" is done
+
+                # cover shared u turn case
+                if movement_direction == "turn_u" and movement_num_lanes == 0:
+                    # cityflow recognizes u turn as left turn
+                    road_link["type"] = "turn_left"
+                    lane_link = prepare_lane_link(from_lane_index, 0)
+                    lane_links.append(lane_link)
+
+                # cover u turn case
+                # try to push vehicles to the left
+                if movement_direction == "turn_u" and movement_num_lanes > 0:
+                    # cityflow recognizes u turn as left turn
+                    road_link["type"] = "turn_left"
+                    for to_lane_index in range(movement_num_lanes):
+                        lane_link = prepare_lane_link(from_lane_index, to_lane_index)
+                        lane_links.append(lane_link)
+
+                        from_lane_index += 1
 
                 # cover shared left turn case
                 if movement_direction == "turn_left" and movement_num_lanes == 0:
@@ -422,7 +451,7 @@ class CityflowConverter:
                     protected_movements = set(signal_plan[movement].get("protected", ()))
                     permitted_movements = set(signal_plan[movement].get("permitted", ()))
                     all_movements = all_movements.union(protected_movements, permitted_movements)
-                    # ignore u turns for now
+                    # ignore movements not designed for in this converter for now
                     all_movements = {movement for movement in all_movements if movement in MOVEMENT_ORDER}
 
                     # add green and yellow times
@@ -456,7 +485,8 @@ class CityflowConverter:
             intersection["point"] = extract_coord(node)
 
             # check if node is virtual meaning it is not signalized
-            is_virtual = node["TYPE_DESC"] != "Signalized"
+            # is_virtual = node["TYPE_DESC"] != "Signalized"
+            is_virtual = node_id not in traffic_phase_infos.keys()
             intersection["width"] = 0 if is_virtual else 15
 
             # add roads to the intersection

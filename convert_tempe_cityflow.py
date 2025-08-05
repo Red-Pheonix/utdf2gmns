@@ -16,4 +16,4 @@ if __name__ == "__main__":
     # Step 1: Initialize the UTDF2GMNS
     net = ug.UTDF2GMNS(utdf_filename=path_utdf, region_name=region_name, verbose=False)
     net.geocode_utdf_intersections(single_intersection_coord={}, dist_threshold=0.01)
-    net.utdf_to_cityflow(sim_name="bullhead", sim_start_time=0, sim_duration=3600)
+    net.utdf_to_cityflow(sim_name="bullhead", sim_start_time=0, sim_duration=7200)
