@@ -20,6 +20,17 @@
 
 # utdf2gmns
 
+## Instructions (For UTDF -> Cityflow converter)
+
+Run this for converting the UTDF Tempe network to Cityflow format:
+
+```bash
+
+python convert_tempe_cityflow.py
+```
+
+The output cityflow network and flow files are saved to the `utdf_to_cityflow` directory.
+
 ## Introduction
 
 An AMS(Analysis, Modeling and Simulation) tool to convert utdf file to different formats, including GMNS, SUMO etc.
