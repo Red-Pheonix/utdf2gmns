@@ -338,8 +338,8 @@ class CityflowConverter:
                 if movement_data is None:
                     continue
 
-                to_road_id = f"{node_id}_{movement_data.get("Dest Node")}"
-                from_road_id = f"{movement_data.get("Up Node")}_{node_id}"
+                to_road_id = f"{node_id}_{movement_data.get('Dest Node')}"
+                from_road_id = f"{movement_data.get('Up Node')}_{node_id}"
                 movement_num_lanes = int(movement_data.get("Lanes"))
                 movement_direction = MOVEMENT_MAP[movement[-1]]
                 to_road_num_lanes = len(roads_map[to_road_id]["lanes"])
