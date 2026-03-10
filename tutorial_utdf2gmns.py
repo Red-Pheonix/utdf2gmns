@@ -12,14 +12,14 @@ import pandas as pd
 if __name__ == "__main__":
 
     city = " Bullhead City, AZ"
-    path = r"C:\Users\roche\Anaconda_workspace\001_Github\utdf2gmns\datasets\data_bullhead_seg4"
+    path = r"datasets/data_bullhead_seg4"
 
     # get user added intersection data
-    path_user_added_intersection = fr"{path}\utdf_intersection_sample.csv"
+    path_user_added_intersection = fr"{path}/utdf_intersection_sample.csv"
 
     # option= 1, generate movement_utdf.csv directly
     # option= 2, generate movement_utdf.csv step by step (more flexible)
-    option = 3
+    option = 2
 
     if option == 1:
         # NOTE: Option 1, generate movement_utdf.csv directly
@@ -29,9 +29,9 @@ if __name__ == "__main__":
 
     if option == 2:
         # NOTE: Option 2, generate movement_utdf.csv step by step (more flexible)
-        path_utdf = fr"{path}\UTDF.csv"
-        path_node = fr"{path}\node.csv"
-        path_movement = fr"{path}\movement.csv"
+        path_utdf = fr"{path}/UTDF.csv"
+        path_node = fr"{path}/node.csv"
+        path_movement = fr"{path}/movement.csv"
 
         # Step 1: read UTDF.csv
         utdf_dict_data = ug.generate_utdf_dataframes(path_utdf, city)
