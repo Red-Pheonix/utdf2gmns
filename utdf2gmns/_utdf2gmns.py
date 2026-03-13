@@ -584,7 +584,7 @@ class UTDF2GMNS:
 
         # construct cityflow network from UTDF data
         converter = CityflowConverter(self._utdf_dict, self.network_unit)
-        roadnet = converter.generate_cityflow_net()
+        roadnet = converter.generate_cityflow_net(output_dir=cityflow_output_dir)
 
         # generate flow files
         sim_end_time = sim_start_time + sim_duration

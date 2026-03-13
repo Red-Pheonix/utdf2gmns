@@ -1,4 +1,7 @@
+import os
 import re
+
+import pandas as pd
 
 from utdf2gmns.func_lib.gmns.geocoding_Links import cvt_link_df_to_dict, cvt_lonlat_to_utm
 from utdf2gmns.func_lib.utdf.cvt_utdf_lane_df_to_dict import cvt_lane_df_to_dict
@@ -70,6 +73,19 @@ MOVEMENT_ORDER = [
     "WBT",
     "WBR",
 ]
+
+
+def sort_movements(movements):
+    movement_order_map = {movement: index for index, movement in enumerate(MOVEMENT_ORDER)}
+    return sorted(movements, key=lambda movement: movement_order_map.get(movement, len(MOVEMENT_ORDER)))
+
+
+def format_controlled_movement_ids(node_id, movements):
+    return ";".join(f"{node_id}_{movement}" for movement in movements)
+
+
+def format_nema_phase_combination(phases):
+    return "+".join(phase.removeprefix("D") for phase in phases if phase)
 
 
 # convertion functions
@@ -178,7 +194,7 @@ def make_phases_from_ring(barrier: dict):
     group_1 = barrier.get("1", [""])
     group_2 = barrier.get("2", [""])
 
-    barrier_rings = [(phases_x, phases_y) for phases_y in group_2 for phases_x in group_1]
+    barrier_rings = [(phases_x, phases_y) for phases_x in group_1 for phases_y in group_2]
 
     return barrier_rings
 
@@ -316,6 +332,7 @@ class CityflowConverter:
 
             # mapping for translating movement to roadLinks index
             movement_to_road_links = {}
+            movement_to_num_lanes = {}
             movement_index = 0
 
             # for adding lane links
@@ -346,6 +363,7 @@ class CityflowConverter:
 
                 road_link = {}
                 movement_to_road_links[movement] = movement_index
+                movement_to_num_lanes[movement] = movement_num_lanes
 
                 road_link["type"] = movement_direction
                 road_link["startRoad"] = from_road_id
@@ -429,6 +447,7 @@ class CityflowConverter:
             node_to_road_links_map[node_id] = {
                 "roadLinks": road_links,
                 "movementToRoadLinks": movement_to_road_links,
+                "movementToNumLanes": movement_to_num_lanes,
             }
 
         # TODO: add u turn connections for peripheral nodes if enabled
@@ -461,16 +480,24 @@ class CityflowConverter:
 
             # gather all green phases
             traffic_light_infos[traffic_light_node] = []
-            for phases in all_phases:
+            total_phases = len(all_phases)
+            for phase_index, phases in enumerate(all_phases, start=1):
                 all_movements = set()
+                phase_movements = set()
+                min_greens = []
                 max_greens = []
                 yellow_times = []
+                all_red_times = []
+                walk_times = []
+                ped_clearance_times = []
+                veh_ext_times = []
                 for movement in phases:
 
                     # skip for empty movement
                     if movement == "":
                         continue
 
+                    phase_movements.add(movement)
                     # add both protected and permitted movements
                     protected_movements = set(signal_plan[movement].get("protected", ()))
                     permitted_movements = set(signal_plan[movement].get("permitted", ()))
@@ -484,16 +511,52 @@ class CityflowConverter:
                     # TODO: figure out a way to match the SUMO converter implementation
                     # for the green and yellow times. Right now it's ok for LibSignal
                     # because it doesn't care about signal timings
-                    max_green_time = extract_int(signal_plan[movement].get("MaxGreen"))
-                    max_greens.append(max_green_time)
-                    yellow_time = extract_int(signal_plan[movement].get("Yellow"))
-                    yellow_times.append(yellow_time)
+                    min_green_time = extract_float(signal_plan[movement].get("MinGreen"))
+                    max_green_time = extract_float(signal_plan[movement].get("MaxGreen"))
+                    yellow_time = extract_float(signal_plan[movement].get("Yellow"))
 
-                green_phase_movements = [tl_movement_map[movement] for movement in all_movements]
+                    min_greens.append(min_green_time)
+                    max_greens.append(max_green_time)
+                    yellow_times.append(yellow_time)
+                    all_red_times.append(extract_float(signal_plan[movement].get("AllRed")))
+                    walk_times.append(extract_float(signal_plan[movement].get("Walk")))
+                    ped_clearance_times.append(extract_float(signal_plan[movement].get("DontWalk")))
+                    veh_ext_times.append(extract_float(signal_plan[movement].get("VehExt")))
+
+                ordered_movements = sort_movements(all_movements)
+                ordered_phase_movements = sort_movements(phase_movements)
+                green_phase_movements = [
+                    tl_movement_map[movement]
+                    for movement in ordered_movements
+                    if movement in tl_movement_map
+                ]
                 combined_green_time = max(max_greens)
                 combined_yellow_time = max(yellow_times)
-
+                
+                movement_to_num_lanes = node_to_road_links_map[traffic_light_node]["movementToNumLanes"]
+                formatted_movements = [item for m in ordered_movements for item in [m] * max(movement_to_num_lanes[m], 1)]
+                
+                min_green = max(min_greens)
+                max_green = min(max_greens)
+                max_green = max(min_green, max_green)
+                
                 phase_info = {
+                    "node_id": traffic_light_node,
+                    "phase_id": phase_index,
+                    "controlled_movement_ids": ";".join(formatted_movements),
+                    "nema_phase_combination": format_nema_phase_combination(
+                        ordered_phase_movements
+                    ),
+                    "min_green": min_green,
+                    "max_green": max_green,
+                    "yellow": max(yellow_times),
+                    "all_red": max(all_red_times),
+                    "walk": max(walk_times),
+                    "ped_clearance": max(ped_clearance_times),
+                    "veh_ext": max(veh_ext_times),
+                    "is_coordinated": 0,
+                    "start_phase": 1 if phase_index == 1 else 0,
+                    "prefer_next_phase": 1 if phase_index == total_phases else phase_index + 1,
                     "green_phase_movements": green_phase_movements,
                     "green_time": combined_green_time,
                     "yellow_time": combined_yellow_time,
@@ -510,8 +573,10 @@ class CityflowConverter:
             valid_movements = list(tl_movement_map.keys())
 
             # construct green time phases according to defaults
-            for phase in DEFAULT_PHASES:
+            total_phases = len(DEFAULT_PHASES)
+            for phase_index, phase in enumerate(DEFAULT_PHASES, start=1):
                 green_phase_movements = []
+                controlled_movements = []
                 # add movements for each phase
                 for movement_base in phase:
                     # check with base movement type
@@ -522,13 +587,31 @@ class CityflowConverter:
                         if valid[0] == movement_base[0] and valid[2] == movement_base[2]
                     ]
 
+                    controlled_movements.extend(allowed_movements)
                     allowed_movements = [
                         tl_movement_map[movement] for movement in allowed_movements
                     ]
 
                     green_phase_movements.extend(allowed_movements)
 
+                ordered_movements = sort_movements(controlled_movements)
                 phase_info = {
+                    "node_id": traffic_light_node,
+                    "phase_id": phase_index,
+                    "controlled_movement_ids": format_controlled_movement_ids(
+                        traffic_light_node, ordered_movements
+                    ),
+                    "nema_phase_combination": "",
+                    "min_green": float(DEFAULT_GREEN_TIME),
+                    "max_green": float(DEFAULT_GREEN_TIME),
+                    "yellow": float(DEFAULT_YELLOW_TIME),
+                    "all_red": 0.0,
+                    "walk": 0.0,
+                    "ped_clearance": 0.0,
+                    "veh_ext": 0.0,
+                    "is_coordinated": 0,
+                    "start_phase": 1 if phase_index == 1 else 0,
+                    "prefer_next_phase": 1 if phase_index == total_phases else phase_index + 1,
                     "green_phase_movements": green_phase_movements,
                     "green_time": DEFAULT_GREEN_TIME,
                     "yellow_time": DEFAULT_YELLOW_TIME,
@@ -580,7 +663,40 @@ class CityflowConverter:
 
         return intersections
 
-    def generate_cityflow_net(self):
+    def save_generalized_phase_csv(
+        self, traffic_phase_infos: dict, output_dir: str = "", filename: str = "generalized_phase.csv"
+    ):
+        output_path = os.path.join(output_dir, filename) if output_dir else filename
+        fieldnames = [
+            "node_id",
+            "phase_id",
+            "controlled_movement_ids",
+            "nema_phase_combination",
+            "min_green",
+            "max_green",
+            "yellow",
+            "all_red",
+            "walk",
+            "ped_clearance",
+            "veh_ext",
+            "is_coordinated",
+            "start_phase",
+            "prefer_next_phase",
+        ]
+
+        rows = []
+        for node_id in sorted(traffic_phase_infos):
+            phase_infos = traffic_phase_infos[node_id]
+            for phase_info in phase_infos:
+                row = {field: phase_info.get(field, "") for field in fieldnames}
+                rows.append(row)
+
+        pd.DataFrame(rows, columns=fieldnames).to_csv(output_path, index=False)
+
+        print(f"Saved generalized phase info to {output_path}.")
+        return output_path
+
+    def generate_cityflow_net(self, output_dir: str = ""):
 
         # prepare roads
         roads = self.generate_roads()
@@ -594,6 +710,7 @@ class CityflowConverter:
         # prepare traffic lights
         traffic_phase_infos = self.generate_traffic_light_infos(node_to_road_links_map)
         print(f"Found {len(traffic_phase_infos)} traffic lights in the network.")
+        self.save_generalized_phase_csv(traffic_phase_infos, output_dir=output_dir)
 
         # prepare intersections
         intersections = self.generate_intersections(
