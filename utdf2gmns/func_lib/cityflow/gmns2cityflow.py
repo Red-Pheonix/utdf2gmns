@@ -524,7 +524,7 @@ class CityflowConverter:
                     veh_ext_times.append(extract_float(signal_plan[movement].get("VehExt")))
 
                 ordered_movements = sort_movements(all_movements)
-                ordered_phase_movements = sort_movements(phase_movements)
+                ordered_phase_movements = sorted(list(phase_movements))
                 green_phase_movements = [
                     tl_movement_map[movement]
                     for movement in ordered_movements
