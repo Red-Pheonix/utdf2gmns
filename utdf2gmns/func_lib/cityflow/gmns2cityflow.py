@@ -240,6 +240,12 @@ class CityflowConverter:
         self.network_links = None
         self.network_lanes = None
         self.all_traffic_light_nodes = None
+        self.movement_df = None
+        self.gmns_node_df = None
+        self.gmns_link_df = None
+        self.synchro_node_matches_df = None
+        self.matched_gmns_to_utdf_node_map = {}
+        self.gmns_to_utdf_node_map = {}
 
         if utdf_dict:
             self.setup_utdf_data(utdf_dict)
@@ -247,6 +253,7 @@ class CityflowConverter:
             raise ValueError("No utdf dict provided.")
 
         self.network_unit = network_unit
+        self.load_optional_movement_data()
 
     def setup_utdf_data(self, utdf_dict: dict):
         # setup network nodes
@@ -277,6 +284,88 @@ class CityflowConverter:
         self.all_traffic_light_nodes = all_traffic_light_nodes
 
         self.utdf_dict = utdf_dict
+
+    def load_optional_movement_data(self):
+        input_dir = self.utdf_dict.get("_utdf_dir", "")
+        if not input_dir:
+            return
+
+        movement_path = os.path.join(input_dir, "movement.csv")
+        synchro_matches_path = os.path.join(input_dir, "synchro_node_matches.csv")
+
+        candidate_dirs = [input_dir, os.path.join(input_dir, "utdf_to_gmns")]
+        node_path = next(
+            (os.path.join(directory, "node.csv") for directory in candidate_dirs if os.path.exists(os.path.join(directory, "node.csv"))),
+            None,
+        )
+        link_path = next(
+            (os.path.join(directory, "link.csv") for directory in candidate_dirs if os.path.exists(os.path.join(directory, "link.csv"))),
+            None,
+        )
+
+        required_paths = [movement_path, synchro_matches_path, node_path, link_path]
+        if not all(required_paths):
+            return
+
+        self.synchro_node_matches_df = pd.read_csv(synchro_matches_path)
+        self.movement_df = pd.read_csv(movement_path)
+        self.gmns_node_df = pd.read_csv(node_path)
+        self.gmns_link_df = pd.read_csv(link_path)
+        self._build_gmns_to_utdf_node_maps()
+
+        if "node_id" in self.movement_df.columns:
+            matched_node_ids = set(self.matched_gmns_to_utdf_node_map.keys())
+            self.movement_df = self.movement_df[
+                self.movement_df["node_id"].apply(
+                    lambda value: pd.notna(value) and str(int(value)) in matched_node_ids
+                )
+            ].copy()
+
+    def _build_gmns_to_utdf_node_maps(self):
+        matched_rows = self.synchro_node_matches_df
+        if "is_match" in matched_rows.columns:
+            matched_rows = matched_rows[matched_rows["is_match"] == True]
+
+        if {"node_id", "synchro_INTID"}.issubset(matched_rows.columns):
+            self.matched_gmns_to_utdf_node_map = {
+                str(int(match_row["node_id"])): str(int(match_row["synchro_INTID"]))
+                for _, match_row in matched_rows.iterrows()
+                if pd.notna(match_row["node_id"]) and pd.notna(match_row["synchro_INTID"])
+            }
+
+        self.gmns_to_utdf_node_map = dict(self.matched_gmns_to_utdf_node_map)
+        if self.gmns_node_df is None:
+            return
+
+        utdf_node_coords = []
+        for utdf_node_id, utdf_node in self.network_nodes.items():
+            utdf_x = utdf_node.get("x_coord")
+            utdf_y = utdf_node.get("y_coord")
+            if utdf_x is None or utdf_y is None:
+                continue
+            utdf_node_coords.append((utdf_node_id, float(utdf_x), float(utdf_y)))
+
+        for _, gmns_node in self.gmns_node_df.iterrows():
+            gmns_node_id = gmns_node.get("node_id")
+            gmns_x = gmns_node.get("x_coord")
+            gmns_y = gmns_node.get("y_coord")
+            if pd.isna(gmns_node_id) or pd.isna(gmns_x) or pd.isna(gmns_y):
+                continue
+
+            gmns_node_key = str(int(gmns_node_id))
+            if gmns_node_key in self.gmns_to_utdf_node_map:
+                continue
+
+            best_utdf_node_id = None
+            best_distance = None
+            for utdf_node_id, utdf_x, utdf_y in utdf_node_coords:
+                distance = (float(gmns_x) - utdf_x) ** 2 + (float(gmns_y) - utdf_y) ** 2
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_utdf_node_id = utdf_node_id
+
+            if best_utdf_node_id is not None:
+                self.gmns_to_utdf_node_map[gmns_node_key] = best_utdf_node_id
 
     def generate_roads(self):
         # manage unit conversions
@@ -309,7 +398,7 @@ class CityflowConverter:
                     lane["width"] = 3.2
 
                     speed = extract_float(link.get("Speed"), 13.89)  # 13.89 is SUMO default
-                    speed = cvt_unit_speed[unit_speed](speed)
+                    # speed = cvt_unit_speed[unit_speed](speed)
                     lane["maxSpeed"] = speed
 
                     lanes.append(lane)
@@ -324,7 +413,7 @@ class CityflowConverter:
 
         return roads
 
-    def generate_road_links(self, roads_map):
+    def generate_road_links_from_utdf_lanes(self, roads_map):
         node_to_road_links_map = {}
         for node_id, network_lane in self.network_lanes.items():
             # road links for each intersection
@@ -451,6 +540,124 @@ class CityflowConverter:
             }
 
         # TODO: add u turn connections for peripheral nodes if enabled
+
+        return node_to_road_links_map
+
+    def _build_movement_lane_links(self, movement_row, from_road_id, to_road_id, roads_map):
+        prepare_lane_link = build_prepare_lane_link(from_road_id, to_road_id, roads_map)
+
+        start_ib_lane = max(movement_row.get("start_ib_lane"), 1)
+        end_ib_lane = max(movement_row.get("end_ib_lane"), 1)
+        start_ob_lane = max(movement_row.get("start_ob_lane"), 1)  
+        end_ob_lane = max(movement_row.get("end_ob_lane"), 1)  
+
+        lane_links = []
+        for ib_lane in range(start_ib_lane, end_ib_lane + 1):
+            for ob_lane in range(start_ob_lane, end_ob_lane + 1):
+                lane_links.append({
+                    "startLaneIndex": ib_lane - 1,  # 0-based
+                    "endLaneIndex": ob_lane - 1,    # 0-based
+                    "points": []
+                })
+
+        return lane_links
+
+    def generate_road_links_from_movement_csv(self, roads_map):
+        if (
+            self.movement_df is None
+            or self.gmns_node_df is None
+            or self.gmns_link_df is None
+            or self.synchro_node_matches_df is None
+        ):
+            return {}
+
+        link_lookup = self.gmns_link_df.set_index("link_id").to_dict("index")
+        matched_gmns_to_utdf_map = self.matched_gmns_to_utdf_node_map
+        gmns_to_utdf_map = self.gmns_to_utdf_node_map
+
+        node_to_road_links_map = {}
+        movement_df = self.movement_df.sort_values(["node_id", "mvmt_id"])
+        for gmns_node_id, movement_rows in movement_df.groupby("node_id"):
+            gmns_node_key = str(int(gmns_node_id))
+            utdf_node_id = matched_gmns_to_utdf_map.get(gmns_node_key)
+            if utdf_node_id is None:
+                continue
+
+            road_links = []
+            movement_to_road_links = {}
+            movement_to_num_lanes = {}
+
+            for i, (_, movement_row) in enumerate(movement_rows.iterrows()):
+                ib_link_id = movement_row.get("ib_link_id")
+                ob_link_id = movement_row.get("ob_link_id")
+                movement_text = movement_row.get("mvmt_txt_id")
+                movement_type = str(movement_row.get("type", "")).lower()
+
+                ib_link = link_lookup.get(int(ib_link_id))
+                ob_link = link_lookup.get(int(ob_link_id))
+                # if ib_link is None or ob_link is None:
+                #     continue
+
+                from_utdf_node_id = gmns_to_utdf_map.get(str(int(ib_link.get("from_node_id"))))
+                to_utdf_node_id = gmns_to_utdf_map.get(str(int(ob_link.get("to_node_id"))))
+                # if from_utdf_node_id is None or to_utdf_node_id is None:
+                #     continue
+
+                from_road_id = f"{from_utdf_node_id}_{utdf_node_id}"
+                to_road_id = f"{utdf_node_id}_{to_utdf_node_id}"
+                # if from_road_id not in roads_map or to_road_id not in roads_map:
+                #     continue
+
+                road_link_type = {
+                    "left": "turn_left",
+                    "right": "turn_right",
+                    "thru": "go_straight",
+                    "through": "go_straight",
+                    "uturn": "turn_left",
+                    "u_turn": "turn_left",
+                }.get(movement_type, MOVEMENT_MAP.get(str(movement_text)[-1]))
+                if road_link_type is None:
+                    continue
+
+                lane_links = self._build_movement_lane_links(
+                    movement_row, from_road_id, to_road_id, roads_map
+                )
+                movement_key = str(movement_text)
+                movement_to_road_links[movement_key] = i
+                movement_to_num_lanes[movement_key] = movement_row["lanes"]
+
+                road_links.append(
+                    {
+                        "type": road_link_type,
+                        "startRoad": from_road_id,
+                        "endRoad": to_road_id,
+                        "direction": 0,
+                        "laneLinks": lane_links,
+                    }
+                )
+
+            if road_links:
+                node_to_road_links_map[utdf_node_id] = {
+                    "roadLinks": road_links,
+                    "movementToRoadLinks": movement_to_road_links,
+                    "movementToNumLanes": movement_to_num_lanes,
+                }
+
+        return node_to_road_links_map
+
+    def generate_road_links(self, roads_map):
+        node_to_road_links_map = self.generate_road_links_from_utdf_lanes(roads_map)
+        # movement_road_links_map = self.generate_road_links_from_movement_csv(roads_map)
+
+        # for node_id, node_road_links in node_to_road_links_map.items():
+        #     movement_road_links = movement_road_links_map.get(node_id)
+            
+        #     node_indexes = node_road_links["movementToRoadLinks"]
+        #     movement_indexes = movement_road_links["movementToRoadLinks"]
+            
+        #     for mvmt in node_indexes.keys():
+        #         node_road_links["roadLinks"][node_indexes[mvmt]]["laneLinks"] = movement_road_links["roadLinks"][movement_indexes[mvmt]]["laneLinks"]
+            
 
         return node_to_road_links_map
 
@@ -716,6 +923,21 @@ class CityflowConverter:
         intersections = self.generate_intersections(
             roads, node_to_road_links_map, traffic_phase_infos
         )
+        
+        # give a check for the intersections
+        for inter in intersections:
+            for i, link in enumerate(inter["roadLinks"]):
+                start_max_index = len(roads_map[link["startRoad"]]["lanes"]) - 1 
+                end_max_index = len(roads_map[link["endRoad"]]["lanes"]) - 1
+                
+                for j, lane_link in enumerate(link["laneLinks"]):
+                    start_lane = min(lane_link["startLaneIndex"], start_max_index)
+                    end_lane = min(lane_link["endLaneIndex"], end_max_index)
+                    
+                    inter["roadLinks"][i]["laneLinks"][j]["startLaneIndex"] = start_lane
+                    inter["roadLinks"][i]["laneLinks"][j]["endLaneIndex"] = end_lane
+                    
+                    pass
 
         roadnet = {
             "intersections": intersections,

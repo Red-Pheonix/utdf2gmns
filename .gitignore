@@ -172,3 +172,7 @@ te.py
 */source_tes/*
 setup.py
 */syslogs/*
+
+.DS_STORE
+EdgeData.xml
+*.csv

@@ -103,6 +103,7 @@ class UTDF2GMNS:
 
         # assign to instance variable
         self._utdf_dict = utdf_dict_data
+        self._utdf_dict["_utdf_dir"] = str(Path(self._utdf_filename).parent.absolute())
         self.network_int_ids = [str(int_id) for int_id in set(self._utdf_dict.get("Nodes")["INTID"].tolist())]
         self.network_int_ids_signalized = [str(int_id) for int_id in set(
             self._utdf_dict.get("Timeplans")["INTID"].tolist())]
