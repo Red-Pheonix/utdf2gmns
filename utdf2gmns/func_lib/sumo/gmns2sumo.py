@@ -17,7 +17,10 @@ from xml.dom import minidom
 import xml.etree.ElementTree as ET  # Use ElementTree for XML generation
 import re
 import copy
+import os
 from datetime import datetime
+
+import pandas as pd
 
 from utdf2gmns.func_lib.gmns.geocoding_Links import cvt_lonlat_to_utm
 from utdf2gmns.func_lib.utdf.cvt_utdf_lane_df_to_dict import cvt_lane_df_to_dict
@@ -219,7 +222,7 @@ def generate_net_lane_lookup_dict(utdf_dict: dict, net_unit: str) -> dict:
                                  "speed": mvt_turn_info.get("Speed"),
                                  "volume": mvt_turn_info.get("Volume"),
                                  "distance": mvt_turn_info.get("Distance"),
-                                 "num_detects": mvt_turn_info.get("numDetects"),
+                                  "num_detects": mvt_turn_info.get("numDetects"),
                                  }
 
                 if "R" in mvt_turn:
@@ -496,6 +499,57 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
 
     lanes_df = utdf_dict.get("Lanes")
 
+    network_nodes = utdf_dict.get("network_nodes")
+    movement_df = None
+    synchro_node_matches_df = None
+    gmns_node_df = None
+    gmns_link_df = None
+    matched_gmns_to_utdf_node_map = {}
+    gmns_to_utdf_node_map = {}
+
+    input_dir = utdf_dict.get("_utdf_dir", "")
+    if input_dir:
+        movement_path = os.path.join(input_dir, "movement.csv")
+        synchro_matches_path = os.path.join(input_dir, "synchro_node_matches.csv")
+
+        candidate_dirs = [input_dir, os.path.join(input_dir, "utdf_to_gmns")]
+        node_path = next(
+            (
+                os.path.join(directory, "node.csv")
+                for directory in candidate_dirs
+                if os.path.exists(os.path.join(directory, "node.csv"))
+            ),
+            None,
+        )
+        link_path = next(
+            (
+                os.path.join(directory, "link.csv")
+                for directory in candidate_dirs
+                if os.path.exists(os.path.join(directory, "link.csv"))
+            ),
+            None,
+        )
+
+        required_paths = [movement_path, synchro_matches_path, node_path, link_path]
+        if all(required_paths):
+            synchro_node_matches_df = pd.read_csv(synchro_matches_path)
+            movement_df = pd.read_csv(movement_path)
+            gmns_node_df = pd.read_csv(node_path)
+            gmns_link_df = pd.read_csv(link_path)
+
+            matched_rows = synchro_node_matches_df
+            if "is_match" in matched_rows.columns:
+                matched_rows = matched_rows[matched_rows["is_match"] == True]
+
+            if {"node_id", "synchro_INTID"}.issubset(matched_rows.columns):
+                matched_gmns_to_utdf_node_map = {
+                    str(int(match_row["node_id"])): str(int(match_row["synchro_INTID"]))
+                    for _, match_row in matched_rows.iterrows()
+                    if pd.notna(match_row["node_id"]) and pd.notna(match_row["synchro_INTID"])
+                }
+
+            gmns_to_utdf_node_map = dict(matched_gmns_to_utdf_node_map)
+
     if lanes_df is None:
         raise ValueError("Could not get Lane data from utdf_dict.")
 
@@ -539,13 +593,178 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
 
         return f"{lane_index_integer}"
 
+    def get_edge_lane_count(edge_id: str) -> int:
+        """Get the number of lanes on an edge from the link lookup dictionary."""
+        edge_lanes = link_lookup_dict.get(edge_id)["num_lanes"]
+        edge_lanes = re.findall(r"\d+", str(edge_lanes))[0]
+        return int(edge_lanes)
+
+    def add_connection(from_edge: str, to_edge: str, from_lane: str, to_lane: str, direction: str):
+        """Append a SUMO connection element."""
+        connection = ET.SubElement(root_con, "connection")
+        connection.set("from", from_edge)
+        connection.set("to", to_edge)
+        connection.set("fromLane", str(from_lane))
+        connection.set("toLane", str(to_lane))
+        connection.set("dir", direction)
+
+    def make_default_right_lanes(up_node: str, int_id: str, dest_node: str, num_lanes: str, lane_index: int) -> int:
+        """Create default right-turn connections and return the updated lane index."""
+        if int(num_lanes) == 0:  # shared right turn lane
+            add_connection(
+                f"{up_node}_{int_id}",
+                f"{int_id}_{dest_node}",
+                update_lane_index(f"{lane_index}", f"{up_node}_{int_id}", link_lookup_dict),
+                update_lane_index(f"{lane_index}", f"{int_id}_{dest_node}", link_lookup_dict),
+                "r",
+            )
+
+        elif int(num_lanes) > 0:  # protected right turn lane (right turn bay)
+            for _ in range(int(num_lanes)):
+                add_connection(
+                    f"{up_node}_{int_id}",
+                    f"{int_id}_{dest_node}",
+                    update_lane_index(f"{lane_index}", f"{up_node}_{int_id}", link_lookup_dict),
+                    update_lane_index(f"{lane_index}", f"{int_id}_{dest_node}", link_lookup_dict),
+                    "r",
+                )
+
+                lane_index += 1
+
+        return lane_index
+
+    def make_default_through_lanes(up_node: str, int_id: str, dest_node: str, num_lanes: str, lane_index: int) -> int:
+        """Create default through connections and return the updated lane index."""
+        if int(num_lanes) > 0:
+            for through_index in range(int(num_lanes)):
+                add_connection(
+                    f"{up_node}_{int_id}",
+                    f"{int_id}_{dest_node}",
+                    update_lane_index(f"{lane_index}", f"{up_node}_{int_id}", link_lookup_dict),
+                    update_lane_index(f"{through_index}", f"{int_id}_{dest_node}", link_lookup_dict),
+                    "s",
+                )
+
+                lane_index += 1
+
+        return lane_index
+
+    def make_default_left_lanes(up_node: str, int_id: str, dest_node: str, num_lanes: str, lane_index: int) -> int:
+        """Create default left-turn connections and return the updated lane index."""
+        if int(num_lanes) == 0:  # shared left turn lane
+            to_lane_val = get_edge_lane_count(f"{int_id}_{dest_node}") - 1  # to innermost lane
+            if to_lane_val < 0:
+                to_lane_val = 0
+            add_connection(
+                f"{up_node}_{int_id}",
+                f"{int_id}_{dest_node}",
+                update_lane_index(f"{lane_index}", f"{up_node}_{int_id}", link_lookup_dict),
+                str(to_lane_val),
+                "l",
+            )
+
+        elif int(num_lanes) > 0:  # protected left turn lane (left turn bay)
+            for left_turn_index in range(int(num_lanes))[::-1]:
+                to_lane_val = get_edge_lane_count(f"{int_id}_{dest_node}") - left_turn_index - 1
+                if to_lane_val < 0:
+                    to_lane_val = 0
+                add_connection(
+                    f"{up_node}_{int_id}",
+                    f"{int_id}_{dest_node}",
+                    update_lane_index(f"{lane_index}", f"{up_node}_{int_id}", link_lookup_dict),
+                    str(to_lane_val),
+                    "l",
+                )
+
+                lane_index += 1
+
+        return lane_index
+
+    def make_default_uturn_lanes(up_node: str, int_id: str, dest_node: str, num_lanes: str, lane_index: int) -> int:
+        """Create default U-turn connections and return the updated lane index."""
+        if int(num_lanes) == 0:  # shared U-turn lane
+            from_lane_val = lane_index - 1
+            if from_lane_val < 0:
+                from_lane_val = 0
+            to_lane_val = get_edge_lane_count(f"{int_id}_{dest_node}") - 1  # to innermost lane
+            if to_lane_val < 0:
+                to_lane_val = 0
+            add_connection(
+                f"{up_node}_{int_id}",
+                f"{int_id}_{dest_node}",
+                str(from_lane_val),
+                str(to_lane_val),
+                "t",
+            )
+
+        elif int(num_lanes) > 0:  # protected U-turn lane (U-turn bay)
+            for u_turn_index in range(int(num_lanes))[::-1]:
+                from_lane_val = lane_index - 1
+                if from_lane_val < 0:
+                    from_lane_val = 0
+                to_lane_val = get_edge_lane_count(f"{int_id}_{dest_node}") - u_turn_index - 1
+                if to_lane_val < 0:
+                    to_lane_val = 0
+                add_connection(
+                    f"{up_node}_{int_id}",
+                    f"{int_id}_{dest_node}",
+                    str(from_lane_val),
+                    str(to_lane_val),
+                    "t",
+                )
+
+                lane_index += 1
+
+        return lane_index
+
+    def make_gmns_movement_lanes(
+        up_node: str,
+        int_id: str,
+        dest_node: str,
+        movement_row,
+        direction: str,
+        lane_index: int,
+    ) -> int:
+        """Create connections from GMNS movement lane ranges and return the updated lane index."""
+        in_road = f"{up_node}_{int_id}"
+        out_road = f"{int_id}_{dest_node}"
+
+        in_num_lanes = int(link_lookup_dict[in_road]["num_lanes"])
+        out_num_lanes = int(link_lookup_dict[out_road]["num_lanes"])
+
+        in_lane_map = {i + 1: list(range(in_num_lanes))[-(i + 1)] for i in range(in_num_lanes)}
+        out_lane_map = {i + 1: list(range(out_num_lanes))[-(i + 1)] for i in range(out_num_lanes)}
+
+        start_ib_lane = min(max(movement_row.get("start_ib_lane"), 1), in_num_lanes)
+        end_ib_lane = min(max(movement_row.get("end_ib_lane"), 1), in_num_lanes)
+        start_ob_lane = min(max(movement_row.get("start_ob_lane"), 1), out_num_lanes)
+        end_ob_lane = min(max(movement_row.get("end_ob_lane"), 1), out_num_lanes)
+
+        for ib_lane in range(start_ib_lane, end_ib_lane + 1):
+            for ob_lane in range(start_ob_lane, end_ob_lane + 1):
+                add_connection(
+                    in_road,
+                    out_road,
+                    str(in_lane_map[ib_lane]),
+                    str(out_lane_map[ob_lane]),
+                    direction,
+                )
+
+        lane_index += in_num_lanes
+        return lane_index
+
     # create connection xml
     root_con = ET.Element("connections")
 
     # Loop through each intersection, mvt group, lane and connection
     for int_id, mvt_lanes in network_lanes.items():
         # e.g.: "1",  {"NBT": {}, "NBL": {}, "NBU": {}, "NBR": {}, ...}
-
+        # load optional gmns data
+        if movement_df is not None:
+            int_gmns_movements = movement_df[movement_df["node_id"].astype(str) == int_id]
+        else:
+            int_gmns_movements = None
+        
         # Reset mvt_group and mvt_type for each intersection
         mvt_group = copy.deepcopy(mvt_group_base)  # Reset mvt_group for each intersection
 
@@ -570,10 +789,17 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
             for mvt_turn, mvt_turn_info in each_mvt_group.items():
                 # mvt_turn: NBL, NBT, NBR, NBU, ...
                 # mvt_turn_info: {"Up Bode": "", "Dest Node": "", "Lanes": "", ...}
-
+                if int_gmns_movements is not None:
+                    int_gmns_movement = int_gmns_movements[int_gmns_movements["mvmt_txt_id"].astype(str) == mvt_turn]
+                    if int_gmns_movement.empty:
+                        int_gmns_movement = None
+                else:
+                    int_gmns_movement = None
+                
                 # Extract relevant information from mvt_turn_info
                 lane_mvt_info = {"up_node": mvt_turn_info.get("Up Node"),
                                  "dest_node": mvt_turn_info.get("Dest Node"),
+                                 "mvt_turn": mvt_turn,
                                  "lanes": mvt_turn_info.get("Lanes"),
                                  "shared": mvt_turn_info.get("Shared"),
                                  "storage": mvt_turn_info.get("Storage"),
@@ -606,37 +832,31 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
 
                     up_node = right_turn.get("up_node")
                     dest_node = right_turn.get("dest_node")
+                    mvt_turn = right_turn.get("mvt_turn")
+                    gmns_movement = None
+                    if int_gmns_movements is not None:
+                        gmns_movement = int_gmns_movements[int_gmns_movements["mvmt_txt_id"].astype(str) == mvt_turn]
+                        if gmns_movement.empty:
+                            gmns_movement = None
+                    
+                    if gmns_movement is not None:
+                        lane_index = make_gmns_movement_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            gmns_movement.iloc[0],
+                            "r",
+                            lane_index,
+                        )
 
-                    if int(num_lanes) == 0:  # shared right turn lane
-                        # Create connection for shared right turn lane
-                        connection = ET.SubElement(root_con, "connection")
-                        connection.set("from", f"{up_node}_{int_id}")
-                        connection.set("to", f"{int_id}_{dest_node}")
-                        connection.set("fromLane",
-                                       update_lane_index(f"{lane_index}", f"{up_node}_{int_id}", link_lookup_dict))
-                        connection.set("toLane",
-                                       update_lane_index(f"{lane_index}", f"{int_id}_{dest_node}", link_lookup_dict))
-                        connection.set("dir", "r")  # right turn
-                        # connection.set("state", "o")  #
-
-                    elif int(num_lanes) > 0:  # protected right turn lane (right turn bay)
-                        for _ in range(int(num_lanes)):
-                            # Create connection for protected right turn lane
-                            connection = ET.SubElement(root_con, "connection")
-                            connection.set("from", f"{up_node}_{int_id}")
-                            connection.set("to", f"{int_id}_{dest_node}")
-                            connection.set("fromLane",
-                                           update_lane_index(f"{lane_index}",
-                                                             f"{up_node}_{int_id}",
-                                                             link_lookup_dict))
-                            connection.set("toLane",
-                                           update_lane_index(f"{lane_index}",
-                                                             f"{int_id}_{dest_node}",
-                                                             link_lookup_dict))
-                            connection.set("dir", "r")  # right turn
-                            # connection.set("state", "o")
-
-                            lane_index += 1
+                    else:
+                        lane_index = make_default_right_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            num_lanes,
+                            lane_index,
+                        )
 
             # Add Through lanes
             if mvt_type["T"]:
@@ -645,28 +865,29 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
 
                     up_node = through.get("up_node")
                     dest_node = through.get("dest_node")
-
-                    if int(num_lanes) > 0:
-                        for through_index in range(int(num_lanes)):
-                            # create connection for through lane
-                            connection = ET.SubElement(root_con, "connection")
-                            connection.set("from", f"{up_node}_{int_id}")
-                            connection.set("to", f"{int_id}_{dest_node}")
-                            # connection.set("fromLane", str(lane_index))
-                            # connection.set("toLane", str(through_index))
-
-                            connection.set("fromLane",
-                                           update_lane_index(f"{lane_index}",
-                                                             f"{up_node}_{int_id}",
-                                                             link_lookup_dict))
-                            connection.set("toLane",
-                                           update_lane_index(f"{through_index}",
-                                                             f"{int_id}_{dest_node}",
-                                                             link_lookup_dict))
-                            connection.set("dir", "s")  # straight lane
-                            # connection.set("state", "M")  # open lane
-
-                            lane_index += 1
+                    mvt_turn = through.get("mvt_turn")
+                    gmns_movement = None
+                    if int_gmns_movements is not None:
+                        gmns_movement = int_gmns_movements[int_gmns_movements["mvmt_txt_id"].astype(str) == mvt_turn]
+                        if gmns_movement.empty:
+                            gmns_movement = None
+                    if gmns_movement is not None:
+                        lane_index = make_gmns_movement_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            gmns_movement.iloc[0],
+                            "s",
+                            lane_index,
+                        )
+                    else:
+                        lane_index = make_default_through_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            num_lanes,
+                            lane_index,
+                        )
 
             # Add Left Turn lanes
             if mvt_type["L"]:
@@ -675,57 +896,29 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
 
                     up_node = left_turn.get("up_node")
                     dest_node = left_turn.get("dest_node")
-
-                    if int(num_lanes) == 0:  # shared left turn lane
-                        # Create connection for shared left turn lane
-                        connection = ET.SubElement(root_con, "connection")
-                        connection.set("from", f"{up_node}_{int_id}")
-                        connection.set("to", f"{int_id}_{dest_node}")
-                        # connection.set("fromLane", str(lane_index))
-
-                        connection.set("fromLane",
-                                       update_lane_index(f"{lane_index}",
-                                                         f"{up_node}_{int_id}",
-                                                         link_lookup_dict))
-
-                        num_lanes_for_to_link = link_lookup_dict.get(f"{int_id}_{dest_node}")["num_lanes"]
-                        # extract digit group from num_lanes_for_to_link
-                        num_lanes_for_to_link = re.findall(r"\d+", str(num_lanes_for_to_link))[0]  # Extract digit
-
-                        to_lane_val = int(num_lanes_for_to_link) - 1  # to innermost lane
-                        if to_lane_val < 0:
-                            to_lane_val = 0
-                        connection.set("toLane", str(to_lane_val))
-
-                        connection.set("dir", "l")  # left turn
-                        # connection.set("state", "o")  #
-
-                    elif int(num_lanes) > 0:  # protected left turn lane (left turn bay)
-                        for left_turn_index in range(int(num_lanes))[::-1]:  # reverse order for left turn lane
-                            # Create connection for protected left turn lane
-                            connection = ET.SubElement(root_con, "connection")
-                            connection.set("from", f"{up_node}_{int_id}")
-                            connection.set("to", f"{int_id}_{dest_node}")
-                            # connection.set("fromLane", str(lane_index))
-                            connection.set("fromLane",
-                                           update_lane_index(f"{lane_index}",
-                                                             f"{up_node}_{int_id}",
-                                                             link_lookup_dict))
-
-                            num_lanes_for_to_link = link_lookup_dict.get(f"{int_id}_{dest_node}")["num_lanes"]
-
-                            # extract digit group from num_lanes_for_to_link
-                            num_lanes_for_to_link = re.findall(r"\d+", str(num_lanes_for_to_link))[0]  # Extract digit
-
-                            to_lane_val = int(num_lanes_for_to_link) - left_turn_index - 1
-                            if to_lane_val < 0:
-                                to_lane_val = 0
-                            connection.set("toLane", str(to_lane_val))
-                            # connection.set("toLane", f"{int(num_lanes_for_to_link) - left_turn_index - 1}")
-                            connection.set("dir", "l")
-                            # connection.set("state", "o")  #
-
-                            lane_index += 1
+                    mvt_turn = left_turn.get("mvt_turn")
+                    gmns_movement = None
+                    if int_gmns_movements is not None:
+                        gmns_movement = int_gmns_movements[int_gmns_movements["mvmt_txt_id"].astype(str) == mvt_turn]
+                        if gmns_movement.empty:
+                            gmns_movement = None
+                    if gmns_movement is not None:
+                        lane_index = make_gmns_movement_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            gmns_movement.iloc[0],
+                            "l",
+                            lane_index,
+                        )
+                    else:
+                        lane_index = make_default_left_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            num_lanes,
+                            lane_index,
+                        )
 
             # Add U-Turn lanes
             if mvt_type["U"]:
@@ -734,54 +927,29 @@ def generate_sumo_connection_xml(utdf_dict: dict, filename: str = "network.con.x
 
                     up_node = u_turn.get("up_node")
                     dest_node = u_turn.get("dest_node")
-
-                    if int(num_lanes) == 0:  # shared U-turn lane
-                        # Create connection for shared U-turn lane
-                        connection = ET.SubElement(root_con, "connection")
-                        connection.set("from", f"{up_node}_{int_id}")
-                        connection.set("to", f"{int_id}_{dest_node}")
-
-                        from_lane_val = lane_index - 1
-                        if from_lane_val < 0:
-                            from_lane_val = 0
-                        connection.set("fromLane", str(from_lane_val))
-
-                        num_lanes_for_to_link = link_lookup_dict.get(f"{int_id}_{dest_node}")["num_lanes"]
-                        # extract digit group from num_lanes_for_to_link
-                        num_lanes_for_to_link = re.findall(r"\d+", str(num_lanes_for_to_link))[0]  # Extract digit
-
-                        to_lane_val = int(num_lanes_for_to_link) - 1  # to innermost lane
-                        if to_lane_val < 0:
-                            to_lane_val = 0
-                        connection.set("toLane", str(to_lane_val))
-                        # connection.set("toLane", f"{int(num_lanes_for_to_link) - 1}")  # to innermost lane
-                        connection.set("dir", "t")  # U-turn
-                        # connection.set("state", "o")  #
-
-                    elif int(num_lanes) > 0:  # protected U-turn lane (U-turn bay)
-                        for u_turn_index in range(int(num_lanes))[::-1]:
-                            # Create connection for protected U-turn lane
-                            connection = ET.SubElement(root_con, "connection")
-                            connection.set("from", f"{up_node}_{int_id}")
-                            connection.set("to", f"{int_id}_{dest_node}")
-
-                            from_lane_val = lane_index - 1
-                            if from_lane_val < 0:
-                                from_lane_val = 0
-                            connection.set("fromLane", str(from_lane_val))
-
-                            num_lanes_for_to_link = link_lookup_dict.get(f"{int_id}_{dest_node}")["num_lanes"]
-                            # extract digit group from num_lanes_for_to_link
-                            num_lanes_for_to_link = re.findall(r"\d+", str(num_lanes_for_to_link))[0]  # Extract digit
-
-                            to_lane_val = int(num_lanes_for_to_link) - u_turn_index - 1
-                            if to_lane_val < 0:
-                                to_lane_val = 0
-                            connection.set("toLane", str(to_lane_val))
-                            # connection.set("toLane", f"{int(num_lanes_for_to_link) - u_turn_index - 1}")
-                            connection.set("dir", "t")
-
-                            lane_index += 1
+                    mvt_turn = u_turn.get("mvt_turn")
+                    gmns_movement = None
+                    if int_gmns_movements is not None:
+                        gmns_movement = int_gmns_movements[int_gmns_movements["mvmt_txt_id"].astype(str) == mvt_turn]
+                        if gmns_movement.empty:
+                            gmns_movement = None
+                    if gmns_movement is not None:
+                        lane_index = make_gmns_movement_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            gmns_movement.iloc[0],
+                            "t",
+                            lane_index,
+                        )
+                    else:
+                        lane_index = make_default_uturn_lanes(
+                            up_node,
+                            int_id,
+                            dest_node,
+                            num_lanes,
+                            lane_index,
+                        )
 
     xml_str = xml_prettify(root_con)
     with open(filename, "w") as f:
