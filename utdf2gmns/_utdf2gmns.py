@@ -19,6 +19,8 @@ from utdf2gmns.util_lib.pkg_utils import time_unit_converter, time_str_to_second
 
 # For deployment
 from utdf2gmns.func_lib.utdf.geocoding_intersection import generate_intersection_coordinates
+from utdf2gmns.func_lib.utdf.consensus_geocoding import (fit_network_coordinates,
+                                                         apply_network_fit)
 from utdf2gmns.func_lib.utdf.read_utdf import (generate_intersection_from_Links, read_UTDF)
 from utdf2gmns.func_lib.utdf.cvt_utdf_lane_df_to_dict import cvt_lane_df_to_dict
 
@@ -129,7 +131,10 @@ class UTDF2GMNS:
     def geocode_utdf_intersections(self,
                                    *,
                                    single_intersection_coord: dict = None,
-                                   dist_threshold: float = 0.01) -> bool:
+                                   dist_threshold: float = 0.01,
+                                   use_consensus: bool = True,
+                                   max_geocode: int = 25,
+                                   geocode_cache: dict = None) -> bool:
         """Geocode intersections
         Firstly, geocode one intersection from given single intersection coordinate.
         Then, according to the Nodes information, calculate all intersections based on relative coordinates.
@@ -140,8 +145,20 @@ class UTDF2GMNS:
                 Sample data: {"INTID": "1", "x_coord": -114.568, "y_coord": 35.155}
             dist_threshold (float): distance threshold for geocoding intersections, defaults to 0.01. Unit: km
                 only used when single_intersection_coord is not provided.
+            use_consensus (bool): georeference from many geocoded intersections
+                by RANSAC similarity fit instead of from a single anchor,
+                defaults to True. Ignored when single_intersection_coord is
+                given.
+            max_geocode (int): cap on how many intersection names to geocode
+                for the consensus fit, defaults to 25.
+            geocode_cache (dict): name -> [lon, lat], read and extended in
+                place so repeat runs are offline and reproducible.
 
         Note:
+            - the consensus fit exists because the single-anchor path accepts a
+              geocode whose forward and reversed lookups merely agree with each
+              other, which a confidently wrong result does perfectly. See
+              func_lib/utdf/consensus_geocoding.py.
             - single_intersection_coord should follow the format:
                 {"INTID": "1", "x_coord": -114.568, "y_coord": 35.155}
             - if single_intersection_coord is not provided,
@@ -174,17 +191,37 @@ class UTDF2GMNS:
                 self._utdf_dict.get("Links"),
                 self._utdf_region_name)
 
-            # geocoding one intersection from address, with threshold (default 0.01) km
-            single_intersection = generate_intersection_coordinates(
-                df_utdf_intersection,
-                dist_threshold=dist_threshold,
-                geocode_one=True)
+            if use_consensus:
+                network_fit = fit_network_coordinates(
+                    df_utdf_intersection,
+                    self._utdf_dict.get("Nodes"),
+                    self._utdf_region_name,
+                    net_unit=self.network_unit,
+                    max_geocode=max_geocode,
+                    cache=geocode_cache,
+                    verbose=True)
+            else:
+                network_fit = {}
 
-            # check if the single_intersection is empty
-            if single_intersection["INTID"] is None:
-                raise Exception(
-                    "\n  No valid intersection is geo-coded!"
-                    "  Please change dist_threshold or provide single_coord manually.")
+            if network_fit:
+                # a consensus inlier, so the offsetting below starts from a
+                # point the majority of intersections agree with
+                single_intersection = network_fit["seed"]
+            else:
+                if use_consensus:
+                    print("  ! consensus fit unavailable, falling back to a single anchor")
+
+                # geocoding one intersection from address, with threshold (default 0.01) km
+                single_intersection = generate_intersection_coordinates(
+                    df_utdf_intersection,
+                    dist_threshold=dist_threshold,
+                    geocode_one=True)
+
+                # check if the single_intersection is empty
+                if single_intersection["INTID"] is None:
+                    raise Exception(
+                        "\n  No valid intersection is geo-coded!"
+                        "  Please change dist_threshold or provide single_coord manually.")
         else:
             if not {"INTID", "x_coord", "y_coord"}.issubset(set(single_intersection_coord.keys())):
                 raise ValueError("Single coordinate should have INTID, x_coord, and y_coord keys!")
@@ -204,11 +241,18 @@ class UTDF2GMNS:
                 raise ValueError(f"single intersection: {int_id} not in the UTDF Nodes!")
 
             single_intersection = single_intersection_coord
+            network_fit = {}
 
         # update Nodes from single_intersection
         node_dict = update_node_from_one_intersection(single_intersection,
                                                       self._utdf_dict.get("Nodes"),
                                                       self.network_unit)
+
+        # The offsets above assume Synchro units are exactly feet and that
+        # Synchro +Y is true north. The consensus fit measured both, so replace
+        # the coordinates with the fitted ones where one is available.
+        if network_fit:
+            node_dict = apply_network_fit(network_fit, node_dict)
 
         self.network_nodes = node_dict
         self._utdf_dict["network_nodes"] = node_dict
