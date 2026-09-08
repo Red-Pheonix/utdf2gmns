@@ -19,6 +19,7 @@ from utdf2gmns.func_lib import (read_UTDF,
 
                                 plot_net_mpl,
                                 plot_net_keplergl)
+from utdf2gmns.func_lib.gmns.gmns_spec import to_spec_gmns
 from utdf2gmns.util_lib import (calculate_point2point_distance_in_km,
                                 time_unit_converter,
                                 time_str_to_seconds)
@@ -30,6 +31,7 @@ __all__ = [
     'cvt_lane_df_to_dict',
     'cvt_link_df_to_dict',
     'cvt_utdf_to_signal_intersection',
+    'to_spec_gmns',
     'remove_sumo_U_turn',
     "update_sumo_signal_from_utdf",
     'sumo2geojson',
