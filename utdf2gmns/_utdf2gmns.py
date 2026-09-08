@@ -31,6 +31,7 @@ from utdf2gmns.func_lib.gmns.generate_lane_movement import (generate_gmns_lane,
                                                             generate_gmns_movement,
                                                             generate_gmns_node)
 from utdf2gmns.func_lib.gmns.sigma_x_process_signal_intersection import cvt_utdf_to_signal_intersection
+from utdf2gmns.func_lib.gmns.gmns_spec import to_spec_gmns
 
 from utdf2gmns.func_lib.sumo.signal_intersections import parse_signal_control
 from utdf2gmns.func_lib.sumo.update_sumo_signal_from_utdf import (
@@ -300,7 +301,8 @@ class UTDF2GMNS:
             self._utdf_filename, verbose=self._verbose)
         return True
 
-    def utdf_to_gmns(self, *, output_dir: str = "", incl_utdf: bool = True, is_link_polygon: bool = False) -> bool:
+    def utdf_to_gmns(self, *, output_dir: str = "", incl_utdf: bool = True,
+                     is_link_polygon: bool = False, spec_compliant: bool = True) -> bool:
         """Convert UTDF data to GMNS data and save to the output directory
 
         Args:
@@ -309,11 +311,18 @@ class UTDF2GMNS:
             is_link_polygon (bool): retained for API compatibility. GMNS export
                 now writes directed link centerlines so turn-bay links remain
                 consistent with the SUMO network.
+            spec_compliant (bool): rewrite the output to the published GMNS
+                spec, defaults to True. Set False for the historical column
+                names (`length_m`, `free_speed_mps`, `ib_lane_indices`, ...).
 
         Note:
             - the UTDF data includes Nodes, Networks, Timeplans, Links, Lanes, and Phases.
             - the GMNS data includes node.csv, link.csv, lane.csv,
               movement.csv, and signal.json.
+            - with spec_compliant=True the signal timing in signal.json is also
+              unpacked into signal_controller.csv, signal_timing_plan.csv,
+              signal_timing_phase.csv and signal_phase_mvmt.csv, and a
+              config.csv is written declaring units and CRS.
 
         Raises:
             FileNotFoundError: Output directory not found!
@@ -377,6 +386,17 @@ class UTDF2GMNS:
                 os.path.join(gmns_output_dir, "utdf_phases.csv"),
                 index=False)
         print(f"  :Successfully saved GMNS(csv) data to \n    {gmns_output_dir}.")
+
+        if spec_compliant:
+            # Timeplans is passed in rather than read back from
+            # utdf_timeplans.csv, which only exists when incl_utdf is True.
+            timeplans_df = self._utdf_dict.get("Timeplans")
+            to_spec_gmns(
+                gmns_output_dir,
+                timeplans=(timeplans_df.to_dict("records")
+                           if timeplans_df is not None else None),
+                verbose=self._verbose)
+
         return True
 
     def utdf_to_sumo(self, *, output_dir: str = "", sim_name: str = "",
