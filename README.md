@@ -20,6 +20,72 @@
 
 # utdf2gmns
 
+## This branch: `itsc_tutorial`
+
+The fork used for the ITSC 2026 tutorial. It is upstream `v1.2.4` plus two
+changes, both on by default:
+
+**1. Output is spec-compliant GMNS.** `utdf_to_gmns()` used to write its own
+dialect — `length_m`/`free_speed_mps` instead of `length`/`free_speed`,
+`ib_lane_indices` lists instead of `start_ib_lane`/`end_ib_lane`, signal timing
+only as a nested `signal.json`, and no `config.csv`. Anything reading GMNS
+through `gmnspy` rejects or misreads that. Output now follows the published
+spec, `signal.json` is also unpacked into `signal_controller.csv`,
+`signal_timing_plan.csv`, `signal_timing_phase.csv` and `signal_phase_mvmt.csv`,
+and a `config.csv` declares units (metres, m/s) and CRS (4326).
+
+Pass `spec_compliant=False` for the old column names.
+
+Two conventions that are easy to get backwards, so they live in exactly one
+place (`func_lib/gmns/gmns_spec.py`):
+
+- **Lane numbering is flipped.** utdf2gmns numbers lanes `0..N-1` from the curb,
+  which is SUMO's convention; GMNS numbers them `1..N` from the centreline. Get
+  this wrong and you still get a valid-looking network — just one where every
+  turn is fed from the wrong lane.
+- **`signal.json` `BRP` is Barrier-Ring-Position**, confirmed against the
+  sibling `brp_info` map keyed `{barrier: {ring: [phases]}}`.
+
+**2. Georeferencing is by consensus, not by one anchor.** A UTDF file has no
+lat/lon, so something must tie Synchro's private grid to the earth. The old path
+geocoded intersection *names* and took the first whose forward (`"A & B"`) and
+reversed (`"B & A"`) lookups agreed, then placed every node by offsetting from
+that single point. That tests whether the geocoder is self-*consistent*, not
+whether it is *right* — a confidently wrong geocode returns the same wrong point
+twice and agrees perfectly. On the Bullhead SR 95 corridor, `"SR 95 & Fairway
+Vlg Blvd"` resolves **44 km away** with a forward/reverse gap of 0.000 km, so
+whichever name wins the race decides whether the network lands on the corridor
+or in the desert.
+
+`geocode_utdf_intersections()` now geocodes a spread of intersections and fits
+one similarity transform by RANSAC (`func_lib/utdf/consensus_geocoding.py`),
+which outvotes a bad geocode, *measures* scale rather than assuming Synchro
+units are exactly feet, and *measures* rotation rather than assuming Synchro +Y
+is true north. Against 8 OSM-matched intersections there: **13.8 m mean / 26.6 m
+max error before, 3.3 m / 4.5 m after**, with the 44 km outlier rejected
+automatically.
+
+```python
+net.geocode_utdf_intersections()                     # consensus, the default
+net.geocode_utdf_intersections(use_consensus=False)  # old single-anchor path
+net.geocode_utdf_intersections(geocode_cache=cache)  # reuse a name -> lon/lat dict
+```
+
+The size of the correction is network-specific and worth measuring rather than
+assuming: Bullhead needs −0.289 % scale and +0.121°, Tempe only −0.020 % and
++0.033°.
+
+**Known gap.** Permitted movements are exported as protected. `signal.json`
+distinguishes them and the `protection` column is carried into
+`signal_phase_mvmt.csv`, but downstream converters currently mark every served
+movement `G`, so SUMO warns about unsafe green phases.
+
+The fork's own `generate_sumo_connection_xml` movement ordering from
+`convert_2_cityflow` is **not** on this branch — the GMNS generators in
+`func_lib/gmns/generate_lane_movement.py` import ~10 private helpers from
+upstream's rewritten `gmns2sumo.py`, so upstream's version had to win. That work
+is preserved on `convert_2_cityflow`.
+
 ## Instructions (For UTDF -> Cityflow converter)
 
 Run this for converting the UTDF Tempe network to Cityflow format:
