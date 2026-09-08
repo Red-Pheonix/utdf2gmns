@@ -14,6 +14,9 @@ from utdf2gmns.func_lib import (read_UTDF,
                                 cvt_utdf_to_signal_intersection,
                                 remove_sumo_U_turn,
                                 update_sumo_signal_from_utdf,
+
+                                sumo2geojson,
+
                                 plot_net_mpl,
                                 plot_net_keplergl)
 from utdf2gmns.util_lib import (calculate_point2point_distance_in_km,
@@ -29,9 +32,12 @@ __all__ = [
     'cvt_utdf_to_signal_intersection',
     'remove_sumo_U_turn',
     "update_sumo_signal_from_utdf",
+    'sumo2geojson',
     'plot_net_mpl',
     'plot_net_keplergl',
     "calculate_point2point_distance_in_km",
     "time_unit_converter",
     "time_str_to_seconds",
 ]
+
+__version__ = "1.2.4"

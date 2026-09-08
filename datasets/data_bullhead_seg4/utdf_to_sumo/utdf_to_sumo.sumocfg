@@ -10,7 +10,7 @@
     </output>
     <time>
         <begin value="32400.0"/>
-        <end value="36000.0"/>
+        <end value="43200.0"/>
         <step-length value="1"/>
     </time>
 </configuration>

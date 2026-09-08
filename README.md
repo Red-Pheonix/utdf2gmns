@@ -1,4 +1,4 @@
-[![PyPI version](https://badge.fury.io/py/utdf2gmns.svg)](https://badge.fury.io/py/utdf2gmns)[![Downloads](https://static.pepy.tech/badge/utdf2gmns)](https://pepy.tech/project/utdf2gmns)[![](https://img.shields.io/pypi/wheel/gensim.svg)](https://pypi.org/project/utdf2gmns/)[![](https://img.shields.io/pypi/pyversions/utdf2gmns.svg)](https://www.python.org/)[![](https://img.shields.io/github/release-date/xyluo25/utdf2gmns.svg)](https://img.shields.io/github/release-date/xyluo25/utdf2gmns.svg)[![](https://readthedocs.org/projects/utdf2gmns/badge/?version=latest)](https://utdf2gmns.readthedocs.io/en/latest/?badge=latest)[![](https://img.shields.io/github/contributors/xyluo25/utdf2gmns)](https://github.com/xyluo25/utdf2gmns/graphs/contributors)[![](https://img.shields.io/badge/License-MIT-blue.svg)]( https://opensource.org/license/mit)
+[![PyPI version](https://badge.fury.io/py/utdf2gmns.svg)](https://badge.fury.io/py/utdf2gmns)[![Downloads](https://static.pepy.tech/badge/utdf2gmns)](https://pepy.tech/project/utdf2gmns)[![](https://img.shields.io/pypi/wheel/gensim.svg)](https://pypi.org/project/utdf2gmns/)[![](https://img.shields.io/pypi/pyversions/utdf2gmns.svg)](https://www.python.org/)[![](https://img.shields.io/github/release-date/xyluo25/utdf2gmns.svg)](https://img.shields.io/github/release-date/xyluo25/utdf2gmns.svg)[![](https://readthedocs.org/projects/utdf2gmns/badge/?version=latest)](https://utdf2gmns.readthedocs.io/en/latest/?badge=latest)[![](https://img.shields.io/github/contributors/xyluo25/utdf2gmns)](https://github.com/xyluo25/utdf2gmns/graphs/contributors)[![](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/license/mit)
 
 - [utdf2gmns](#utdf2gmns)
   - [Introduction](#introduction)
@@ -10,7 +10,7 @@
     - [Signalized Intersection Calculation and Visualization (Optional)](#signalized-intersection-calculation-and-visualization-optional)
     - [Geocoding Intersections (Use Automatic Geocoding)](#geocoding-intersections-use-automatic-geocoding)
     - [Geocoding Intersections (Use Manual Geocoding)](#geocoding-intersections-use-manual-geocoding)
-    - [Create GMNS links](#create-gmns-links)
+    - [Create GMNS links (Optional)](#create-gmns-links-optional)
     - [Save GMNS Network](#save-gmns-network)
     - [Convert UTDF Network to SUMO](#convert-utdf-network-to-sumo)
     - [Visualize the Network](#visualize-the-network)
@@ -39,7 +39,6 @@ utdf2gmns explored an automatic process of network coordinating, traffic signal 
 
 While previous efforts have made progress in isolated aspects of the conversion process, none offer a fully automated and scalable end-to-end solution. To fill this gap, we introduce [utdf2gmns](https://pypi.org/project/utdf2gmns/), an open-source Python tool designed to automate the transformation of Synchro UTDF files into GMNS-compliant networks for SUMO simulation. The tool supports automatic geocoding, integration with the Sigma-X engine for intersection analysis, robust SUMO network generation, and extendibility to other microsimulation platforms. Future work will focus on expanding support for adaptive signal systems, incorporating real-time data inputs, and enhancing interoperability with additional simulation frameworks to promote reproducibility and collaborative research in traffic modeling.
 
-
 Official Document: https://utdf2gmns.readthedocs.io/en/latest/
 
 Official GitHub: https://github.com/xyluo25/utdf2gmns
@@ -56,11 +55,11 @@ Previous Development: https://github.com/asu-trans-ai-lab/utdf2gmns ([Initial co
 
 ## Quick Python Example
 
-Notes:
-
-* This quick start guide assumes you have a valid UTDF file and the required dependencies installed.
-* The following example uses a sample UTDF file from the Bullhead City, AZ dataset. You can replace it with your own UTDF file as needed.
-* The example below uses automatic geocoding by default. You can choose to geocode automatically ::ref:: automatic_geociding or manually ::ref:: manual_geocoding as per your requirement.
+> Notes:
+>
+> * This quick start guide assumes you have a valid UTDF file and the required dependencies installed.
+> * The following example uses a sample UTDF file from the Bullhead City, AZ dataset. You can replace it with your own UTDF file as needed.
+> * The example below uses automatic geocoding by default. You can choose to geocode automatically ::ref:: automatic_geociding or manually ::ref:: manual_geocoding as per your requirement.
 
 ### Prepare your UTDF File
 
@@ -103,16 +102,16 @@ net.geocode_utdf_intersections(dist_threshold=0.01)
 ```python
 # Geocode intersections using manual geocoding method
 # This method could provide more accurate geocoding results,
-# Bit it requires user to provide a single intersection coordinate.
+# But it requires user to provide a single intersection coordinate.
 
-# INTED is the intersection ID in UTDF file
-# x_coord and x_coord are the coordinates of the intersection in decimal degrees (Latitude and Longitude)
+# INTID is the intersection ID in UTDF file
+# x_coord and y_coord are the coordinates of the intersection in decimal degrees (Latitude and Longitude)
 
-single_coord={"INTID": "1", "x_coord": -114.568, "x_coord": 35.155}
+single_coord={"INTID": "1", "x_coord": -114.568, "y_coord": 35.155}
 net.geocode_utdf_intersections(single_intersection_coord=single_coord)
 ```
 
-### Create GMNS links
+### Create GMNS links (Optional)
 
 ```python
 # Create GMNS links (polygon-link or line-link)
@@ -126,6 +125,8 @@ This step will convert the UTDF network to GMNS format and save it to CSV and js
 
 > * **nodes.csv** : Contains information about the nodes in the network.
 > * **links.csv** : Contains information about the links in the network.
+> * **lane.csv**: Contains information about the lanes in the network.
+> * **movement.csv:** Contains information about movements on the network.
 > * **signal.json** : Contains information about the signals of each signalized intersection in the network.
 > * **utdf_network.csv** : Contains information from the UTDF file regarding the network configuration and settings.
 > * **utdf_nodes.csv** : Contains information from the UTDF file regarding the nodes in the network.
@@ -171,7 +172,7 @@ net_map = ug.plot_net_mpl(net, save_fig=True, fig_name="Bullhead_City.png")
 net_map = ug.plot_net_keplergl(net, save_fig=True, fig_name="Bullhead_City.html")
 ```
 
-Another way to visualize the network is to open generate .sumocfg file (Open use sumo-gui).
+Another way to visualize the network is to open .sumocfg file (Open use sumo-gui).
 
 ### Quick Example (Full Code)
 
@@ -236,5 +237,5 @@ For more information about the ways you can contribute to utdf2gmns, visit [our 
 If you use utdf2gmns in your work or research, please use the following entry:
 
 ```plaintext
-Xiangyong, Luo and Xuesong Simon，Zhou. “xyluo25/utdf2gmns: V1.0.0”. Zenodo, December 17, 2022. https://doi.org/10.5281/zenodo.14825686.
+Luo, X., Zhang, Y., Xu, G., Li, W., Wang, R., & Zhou, X. S. (2025, December). Automating Traffic Microsimulation from SYNCHRO UTDF to SUMO. In 2025 Winter Simulation Conference (WSC) (pp. 2320-2331). IEEE.
 ```
