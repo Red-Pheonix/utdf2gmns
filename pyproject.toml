@@ -55,8 +55,12 @@ dependencies = {file = ["requirements.txt"]}
 py-modules = []
 package-data = {'utdf2gmns' = ['*.txt', '*.xls', '*.xlsx', '*.csv'], "test_data" = ['*.xls']}
 
-# [tool.setuptools.packages.find]
-# where = ["utdf2gmns"]
+# Without this, a flat-layout repo with this many sibling directories (datasets,
+# docs, tests, ...) makes setuptools give up on auto-discovery and ship a wheel
+# containing only metadata: `pip install git+...` then succeeds and leaves you
+# with no importable utdf2gmns at all.
+[tool.setuptools.packages.find]
+include = ["utdf2gmns*"]
 
 # [tool.setuptools.package-data]
 # utdf2gmns = ['*.txt', '*.xls', '*.xlsx', '*.csv']
