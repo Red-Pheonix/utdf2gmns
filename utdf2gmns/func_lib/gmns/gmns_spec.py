@@ -134,6 +134,15 @@ def signal_tables(signals: dict, timeplans: list = None, name_to_mvmt: dict = No
             cycle_by_node[nid] = _num(row.get("DATA"))
         elif rec == "Offset":
             offset_by_node[nid] = _num(row.get("DATA"))
+    # intersections run by another intersection's controller ("Node 1" = 306 under INTID 6)
+    # have no Timeplans of their own: take the controller's cycle length and offset
+    for row in timeplans:
+        rec = (row.get("RECORDNAME") or "").strip()
+        member = str(row.get("DATA", "")).strip().split(".")[0]
+        nid = str(row.get("INTID", "")).strip()
+        if rec.startswith("Node ") and member not in ("", "0", nid):
+            cycle_by_node.setdefault(member, cycle_by_node.get(nid, ""))
+            offset_by_node.setdefault(member, offset_by_node.get(nid, ""))
 
     controllers, plans, phases, phase_mvmts = [], [], [], []
     unmatched = 0
@@ -174,6 +183,8 @@ def signal_tables(signals: dict, timeplans: list = None, name_to_mvmt: dict = No
             for field, protection in (("protected", "protected"),
                                       ("permitted", "permitted")):
                 for mname in (ph.get(field) or []):
+                    if field == "permitted" and mname in (ph.get("protected") or []):
+                        continue      # listed as both: protected already covers it
                     mid = name_to_mvmt.get((nid, str(mname).strip().upper()))
                     if mid is None:
                         unmatched += 1
