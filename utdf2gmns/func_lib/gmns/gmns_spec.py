@@ -92,6 +92,114 @@ def _num(value, default=None):
         return default
 
 
+SIGNAL_TABLE_FIELDS = {
+    "signal_controller": ["controller_id", "node_id"],
+    "signal_timing_plan": ["timing_plan_id", "controller_id", "time_day", "cycle_length", "offset"],
+    "signal_timing_phase": ["timing_phase_id", "timing_plan_id", "signal_phase_num", "ring", "barrier",
+                            "position", "min_green", "max_green", "extension", "clearance",
+                            "walk_time", "ped_clearance"],
+    "signal_phase_mvmt": ["signal_phase_mvmt_id", "timing_phase_id", "controller_id",
+                          "signal_phase_num", "mvmt_id", "protection"],
+}
+
+
+def signal_tables(signals: dict, timeplans: list = None, name_to_mvmt: dict = None,
+                  node_of: dict = None) -> tuple:
+    """GMNS signal tables from utdf2gmns signal control.
+
+    Args:
+        signals (dict): `UTDF2GMNS.network_signal_control` (after `create_signal_control()`)
+            or the contents of signal.json: {utdf node id: {"D1": {phase fields,
+            "protected": [...], "permitted": [...]}, ..., "brp_info": {...}}}.
+        timeplans (list): UTDF Timeplans rows as dicts (RECORDNAME, INTID, DATA), for
+            cycle length and offset.
+        name_to_mvmt (dict): {(utdf node id, "SBL"): mvmt_id} — the movement row each
+            phase movement refers to. Phase movements without an entry are skipped and counted.
+        node_of (dict): {utdf node id: node_id} when the GMNS network's node ids differ
+            from the UTDF ids (e.g. an OSM-based network); defaults to the UTDF id itself.
+
+    Returns:
+        tuple: ({table name: list of row dicts}, number of unmatched phase movements).
+            Table names and columns are in SIGNAL_TABLE_FIELDS.
+    """
+    timeplans = timeplans or []
+    name_to_mvmt = name_to_mvmt or {}
+    node_of = {str(k): v for k, v in (node_of or {}).items()}
+    cycle_by_node = {}
+    offset_by_node = {}
+    for row in timeplans:
+        rec = (row.get("RECORDNAME") or "").strip()
+        nid = str(row.get("INTID", "")).strip()
+        if rec == "Cycle Length":
+            cycle_by_node[nid] = _num(row.get("DATA"))
+        elif rec == "Offset":
+            offset_by_node[nid] = _num(row.get("DATA"))
+
+    controllers, plans, phases, phase_mvmts = [], [], [], []
+    unmatched = 0
+    for nid, phase_map in signals.items():
+        nid = str(nid)
+        controllers.append({"controller_id": nid, "node_id": node_of.get(nid, nid)})
+        plan_id = f"{nid}_1"
+        plans.append({
+            "timing_plan_id": plan_id,
+            "controller_id": nid,
+            "time_day": "",
+            "cycle_length": cycle_by_node.get(nid, ""),
+            "offset": offset_by_node.get(nid, ""),
+        })
+
+        for key, ph in phase_map.items():
+            num = _phase_num(key)
+            if num is None or not isinstance(ph, dict):
+                continue          # skips 'brp_info'
+            barrier, ring, position = _brp(ph.get("BRP"))
+            yellow = _num(ph.get("Yellow"), 0) or 0
+            allred = _num(ph.get("AllRed"), 0) or 0
+            phases.append({
+                "timing_phase_id": f"{nid}_{num}",
+                "timing_plan_id": plan_id,
+                "signal_phase_num": num,
+                "ring": ring,
+                "barrier": barrier,
+                "position": position,
+                "min_green": _num(ph.get("MinGreen")),
+                "max_green": _num(ph.get("MaxGreen")),
+                "extension": _num(ph.get("VehExt")),
+                "clearance": round(yellow + allred, 3),
+                "walk_time": _num(ph.get("Walk")),
+                "ped_clearance": _num(ph.get("DontWalk")),
+            })
+
+            for field, protection in (("protected", "protected"),
+                                      ("permitted", "permitted")):
+                for mname in (ph.get(field) or []):
+                    mid = name_to_mvmt.get((nid, str(mname).strip().upper()))
+                    if mid is None:
+                        unmatched += 1
+                        continue
+                    phase_mvmts.append({
+                        "signal_phase_mvmt_id": f"{nid}_{num}_{mname}",
+                        # timing_phase_id is the join readers actually use to
+                        # get from a phase to its movements
+                        "timing_phase_id": f"{nid}_{num}",
+                        "controller_id": nid,
+                        "signal_phase_num": num,
+                        "mvmt_id": mid,
+                        "protection": protection,
+                    })
+
+    return {"signal_controller": controllers, "signal_timing_plan": plans,
+            "signal_timing_phase": phases, "signal_phase_mvmt": phase_mvmts}, unmatched
+
+
+def write_signal_tables(tables: dict, dst_dir: str) -> None:
+    """Write the result of `signal_tables` as the four GMNS signal CSV files."""
+    os.makedirs(dst_dir, exist_ok=True)
+    for name, rows in tables.items():
+        _write(os.path.join(dst_dir, name + ".csv"), rows, SIGNAL_TABLE_FIELDS[name])
+
+
 def to_spec_gmns(src_dir: str, dst_dir: str = "", *, crs: int = 4326,
                  dataset_name: str = "", timeplans: list = None,
                  verbose: bool = True) -> str:
@@ -244,81 +352,10 @@ def to_spec_gmns(src_dir: str, dst_dir: str = "", *, crs: int = 4326,
         say(f"  ! dropped movements with non-spec type: {sorted(bad_types)}")
 
     # -------------------------------------------------------------- signals
-    cycle_by_node = {}
-    offset_by_node = {}
-    for row in timeplans:
-        rec = (row.get("RECORDNAME") or "").strip()
-        nid = str(row.get("INTID", "")).strip()
-        if rec == "Cycle Length":
-            cycle_by_node[nid] = _num(row.get("DATA"))
-        elif rec == "Offset":
-            offset_by_node[nid] = _num(row.get("DATA"))
-
-    controllers, plans, phases, phase_mvmts = [], [], [], []
-    unmatched = 0
-    for nid, phase_map in signals.items():
-        nid = str(nid)
-        controllers.append({"controller_id": nid, "node_id": nid})
-        plan_id = f"{nid}_1"
-        plans.append({
-            "timing_plan_id": plan_id,
-            "controller_id": nid,
-            "time_day": "",
-            "cycle_length": cycle_by_node.get(nid, ""),
-            "offset": offset_by_node.get(nid, ""),
-        })
-
-        for key, ph in phase_map.items():
-            num = _phase_num(key)
-            if num is None or not isinstance(ph, dict):
-                continue          # skips 'brp_info'
-            barrier, ring, position = _brp(ph.get("BRP"))
-            yellow = _num(ph.get("Yellow"), 0) or 0
-            allred = _num(ph.get("AllRed"), 0) or 0
-            phases.append({
-                "timing_phase_id": f"{nid}_{num}",
-                "timing_plan_id": plan_id,
-                "signal_phase_num": num,
-                "ring": ring,
-                "barrier": barrier,
-                "position": position,
-                "min_green": _num(ph.get("MinGreen")),
-                "max_green": _num(ph.get("MaxGreen")),
-                "extension": _num(ph.get("VehExt")),
-                "clearance": round(yellow + allred, 3),
-                "walk_time": _num(ph.get("Walk")),
-                "ped_clearance": _num(ph.get("DontWalk")),
-            })
-
-            for field, protection in (("protected", "protected"),
-                                      ("permitted", "permitted")):
-                for mname in (ph.get(field) or []):
-                    mid = name_to_mvmt.get((nid, str(mname).strip().upper()))
-                    if mid is None:
-                        unmatched += 1
-                        continue
-                    phase_mvmts.append({
-                        "signal_phase_mvmt_id": f"{nid}_{num}_{mname}",
-                        # timing_phase_id is the join readers actually use to
-                        # get from a phase to its movements
-                        "timing_phase_id": f"{nid}_{num}",
-                        "controller_id": nid,
-                        "signal_phase_num": num,
-                        "mvmt_id": mid,
-                        "protection": protection,
-                    })
-
-    _write(os.path.join(dst_dir, "signal_controller.csv"), controllers,
-           ["controller_id", "node_id"])
-    _write(os.path.join(dst_dir, "signal_timing_plan.csv"), plans,
-           ["timing_plan_id", "controller_id", "time_day", "cycle_length", "offset"])
-    _write(os.path.join(dst_dir, "signal_timing_phase.csv"), phases,
-           ["timing_phase_id", "timing_plan_id", "signal_phase_num", "ring", "barrier",
-            "position", "min_green", "max_green", "extension", "clearance",
-            "walk_time", "ped_clearance"])
-    _write(os.path.join(dst_dir, "signal_phase_mvmt.csv"), phase_mvmts,
-           ["signal_phase_mvmt_id", "timing_phase_id", "controller_id",
-            "signal_phase_num", "mvmt_id", "protection"])
+    tables, unmatched = signal_tables(signals, timeplans, name_to_mvmt)
+    write_signal_tables(tables, dst_dir)
+    controllers, phases, phase_mvmts = (tables["signal_controller"], tables["signal_timing_phase"],
+                                        tables["signal_phase_mvmt"])
     if unmatched:
         say(f"  ! {unmatched} phase movement(s) had no matching movement row")
 

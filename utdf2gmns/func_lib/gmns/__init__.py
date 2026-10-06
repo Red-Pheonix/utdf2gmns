@@ -16,11 +16,14 @@ from .generate_lane_movement import (generate_gmns_lane,
                                      generate_gmns_movement,
                                      generate_gmns_node)
 from .sigma_x_process_signal_intersection import cvt_utdf_to_signal_intersection
-from .gmns_spec import to_spec_gmns
+from .gmns_spec import to_spec_gmns, signal_tables, write_signal_tables, SIGNAL_TABLE_FIELDS
 
 __all__ = [
     # gmns_spec
     "to_spec_gmns",
+    "signal_tables",
+    "write_signal_tables",
+    "SIGNAL_TABLE_FIELDS",
     # geocoding_Links
     "generate_links",
     "generate_links_polygon",
